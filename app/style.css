@@ -1,0 +1,266 @@
+/* 悬浮工作台 —— Win11 风格（圆角 / 毛玻璃感 rgba / 细腻阴影 / Segoe UI Variable + 微软雅黑） */
+
+:root {
+  --panel-alpha: 0.85;           /* 面板不透明度 60%–100%，由设置滑杆驱动 */
+  --radius-lg: 14px;
+  --radius-md: 10px;
+  --radius-sm: 8px;
+  --font: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei", "微软雅黑", system-ui, sans-serif;
+}
+
+/* ---------- 主题变量（浅色为基线，深色覆盖；跟随系统由 renderer 切换 data-theme） ---------- */
+body[data-theme="light"], body:not([data-theme]) {
+  --bg-1: rgba(243, 246, 252, var(--panel-alpha));
+  --bg-2: rgba(232, 238, 248, calc(var(--panel-alpha) * 0.92));
+  --surface: rgba(255, 255, 255, calc(var(--panel-alpha) * 0.72));
+  --surface-hover: rgba(255, 255, 255, calc(var(--panel-alpha) * 0.95));
+  --text-1: #1b2430;
+  --text-2: #5b6675;
+  --text-3: #8a94a3;
+  --accent: #0a6cff;
+  --accent-soft: rgba(10, 108, 255, 0.14);
+  --line: rgba(27, 36, 48, 0.10);
+  --shadow: 0 18px 48px rgba(10, 20, 40, 0.32), 0 2px 8px rgba(10, 20, 40, 0.18);
+  --row-hover: rgba(255, 255, 255, calc(var(--panel-alpha) * 0.85));
+}
+
+body[data-theme="dark"] {
+  --bg-1: rgba(28, 32, 42, var(--panel-alpha));
+  --bg-2: rgba(22, 26, 34, calc(var(--panel-alpha) * 0.92));
+  --surface: rgba(44, 50, 62, calc(var(--panel-alpha) * 0.72));
+  --surface-hover: rgba(54, 60, 74, calc(var(--panel-alpha) * 0.95));
+  --text-1: #eef2f8;
+  --text-2: #b7c0cd;
+  --text-3: #8c96a5;
+  --accent: #4c9dff;
+  --accent-soft: rgba(76, 157, 255, 0.18);
+  --line: rgba(238, 242, 248, 0.12);
+  --shadow: 0 18px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --row-hover: rgba(70, 78, 92, calc(var(--panel-alpha) * 0.85));
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: transparent; /* 窗口透明，毛玻璃感由面板层 rgba 呈现 */
+  font-family: var(--font);
+  color: var(--text-1);
+  overflow: hidden;
+  user-select: none;
+}
+
+body { padding: 10px; }
+
+/* ---------- 面板容器（半透明主体，REQ-002） ---------- */
+.panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 14px 12px;
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(165deg, var(--bg-1), var(--bg-2));
+  box-shadow: var(--shadow);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(24px) saturate(1.35); /* 配合 acrylic/rgba 的玻璃质感 */
+}
+
+/* ---------- 顶栏 ---------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.date-title { font-size: 17px; font-weight: 700; letter-spacing: 0.2px; }
+.date-sub { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+
+.icon-btn {
+  width: 30px; height: 30px;
+  border: none; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-2);
+  font-size: 14px; cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.icon-btn:hover { background: var(--surface-hover); color: var(--text-1); }
+
+/* ---------- 提示条 ---------- */
+.toast {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  border: 1px solid var(--line);
+}
+
+/* ---------- 分区 ---------- */
+.section {
+  display: flex; flex-direction: column;
+  min-height: 0;
+}
+.plans-section { flex: 1.2; }
+.dones-section { flex: 1; }
+
+.section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 4px 6px;
+}
+.section-title { font-size: 13px; font-weight: 700; color: var(--text-2); letter-spacing: 1px; }
+.section-count { font-size: 11px; color: var(--text-3); }
+
+.empty {
+  padding: 14px 8px;
+  font-size: 12px; color: var(--text-3);
+  text-align: center;
+}
+
+.list {
+  list-style: none;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+  padding: 0 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--text-3) transparent;
+}
+.list::-webkit-scrollbar { width: 6px; }
+.list::-webkit-scrollbar-thumb { background: var(--text-3); border-radius: 3px; }
+.list::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- 计划 / 已办行 ---------- */
+.row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px;
+  margin-bottom: 4px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  transition: background 0.15s ease;
+}
+.row:hover { background: var(--row-hover); }
+
+.row .check {
+  flex: none;
+  width: 16px; height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.row .time {
+  flex: none;
+  max-width: 96px;
+  font-size: 12px; font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.row .time.blank { color: var(--text-3); font-weight: 400; }
+
+.row .text {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.row .meta {
+  flex: none;
+  font-size: 11px; color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.row .row-actions { flex: none; display: flex; gap: 2px; }
+.mini-btn {
+  width: 26px; height: 26px;
+  border: none; border-radius: 6px;
+  background: transparent; color: var(--text-3);
+  font-size: 12px; cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.mini-btn:hover { background: var(--surface-hover); color: var(--text-1); }
+.mini-btn.danger:hover { color: #e04848; }
+
+/* 行内编辑态 */
+.row.editing { flex-wrap: wrap; gap: 6px; }
+.row.editing .edit-box {
+  display: flex; gap: 6px; width: 100%;
+}
+.row.editing input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- 输入 ---------- */
+.input {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text-1);
+  font-size: 13px;
+  font-family: var(--font);
+  outline: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.input:focus { border-color: var(--accent); background: var(--surface-hover); }
+.input::placeholder { color: var(--text-3); }
+.input-time { width: 132px; flex: none; }
+.input-text { flex: 1; min-width: 0; }
+
+.inline-add {
+  display: flex; gap: 6px;
+  padding: 6px 2px 0;
+}
+
+/* ---------- 设置行 ---------- */
+.settings-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 6px 6px;
+  border-top: 1px solid var(--line);
+}
+.setting-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text-2);
+}
+.opacity-item { flex: 1; }
+.setting-value { min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+
+input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+  height: 4px;
+}
+
+.select {
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text-1);
+  font-size: 12px;
+  font-family: var(--font);
+  outline: none;
+  cursor: pointer;
+}
+
+/* ---------- 底部主输入行 ---------- */
+.composer {
+  display: flex; gap: 6px;
+  padding: 8px 6px 4px;
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- 悬浮球窗口（ball.html） ---------- */
+.ball-root {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent;
+  cursor: grab;
+}
+.ball-root.dragging { cursor: grabbing; }
+.ball-root:active { filter: brightness(1.06); }
+.ball-svg { width: 100%; height: 100%; display: block; }
