@@ -36,6 +36,12 @@ require(path.join(ROOT, 'app', 'main.js')); // 真实主进程代码
 const electron = require(path.join(__dirname, 'electron-mock.js'));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 与 app/renderer.js todayKey() 同规则的本地日期键（YYYY-MM-DD） */
+function keyOf(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 let failures = 0;
 let passes = 0;
 function check(name, cond, extra) {
@@ -69,7 +75,7 @@ async function main() {
     need.filter((ch) => !handlers.has(ch)).join(',') || 'all');
 
   const now = new Date();
-  const key = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const key = keyOf(now);
   const t0 = new Date(now.getTime() - 3600e3);
 
   /* 2. data:save（REQ-003/004/005 数据落地） */
@@ -117,15 +123,19 @@ async function main() {
   const rawOnDisk = fs.readFileSync(DATA_FILE, 'utf8');
   check('S5 原文件未被回写覆盖（保留 evil 字段）', rawOnDisk.includes('evil'));
 
-  /* 6. settings:set（REQ-002 透明度 / 主题；autostart 应用 loginItem） */
+  /* 6. settings:set（REQ-002 透明度 / 主题；autostart 应用 loginItem；P2-3 写盘防抖 300ms） */
   const r2 = await handlers.get('settings:set')({}, { opacity: 0.7, theme: 'dark' });
-  check('S6 settings:set ok 且生效', r2 && r2.ok && r2.settings.opacity === 0.7 && r2.settings.theme === 'dark');
+  check('S6 settings:set 响应即时生效', r2 && r2.ok && r2.settings.opacity === 0.7 && r2.settings.theme === 'dark');
+  await sleep(450); // > 300ms 防抖
   const j3 = readBoard();
-  check('S6 设置已持久化', j3.settings.opacity === 0.7 && j3.settings.theme === 'dark');
+  check('S6 设置防抖后持久化', j3.settings.opacity === 0.7 && j3.settings.theme === 'dark');
   const rBad = await handlers.get('settings:set')({}, { opacity: 5, theme: 'hacker' });
   check('S6 越界设置被拒绝/夹取', rBad && rBad.ok && rBad.settings.opacity === 1 && rBad.settings.theme === 'dark');
   const rAuto = await handlers.get('settings:set')({}, { autostart: true });
   check('S6 autostart 开关应用（loginItem）', rAuto && rAuto.ok && rAuto.settings.autostart === true && electron.app.getLoginItemSettings().openAtLogin === true);
+  await sleep(450);
+  const j3b = readBoard();
+  check('S6 越界夹取与自启开关最终落盘', j3b.settings.opacity === 1 && j3b.settings.theme === 'dark' && j3b.settings.autostart === true);
 
   /* 7. panel:toggle 与拖动落盘（REQ-001/002） */
   const r3 = await handlers.get('panel:toggle')({});
@@ -142,6 +152,52 @@ async function main() {
     r4 && r4.clicked === false && j4.settings.ballPosition.x === b.x && j4.settings.ballPosition.y === b.y
     && b.x >= wa.left && b.x + 56 <= wa.right && b.y >= wa.top && b.y + 56 <= wa.bottom,
     JSON.stringify({ saved: j4.settings.ballPosition, bounds: { x: b.x, y: b.y } }));
+
+  /* 9. 跨零点（P1-2 数据层回归防线）：昨日桶存在 + 渲染层跨零点后以新 dateKey 保存 →
+   *    新条目落入今日桶、昨日桶完好。渲染层协议为 onPanelChanged(visible) → 重算 todayKey →
+   *    变更则 data:load 重拉（renderer.js refreshOnShow）；本断言锁定日期桶隔离契约。 */
+  const yd = new Date(now.getTime() - 24 * 3600 * 1000);
+  const yKey = keyOf(yd);
+  const tk = keyOf(new Date());
+  check('S9 前提：重算的今日键与昨日键不同', tk !== yKey, `yesterday=${yKey} today=${tk}`);
+  await handlers.get('data:save')({}, {
+    dateKey: yKey,
+    plans: [{ id: 'p-y1', time: '8:00-9:00', text: '昨日计划', createdAt: yd.toISOString() }],
+    dones: [],
+  });
+  const boardNow = (await handlers.get('data:load')({})).board;
+  check('S9 重拉后昨日桶完好', !!boardNow.days[yKey] && boardNow.days[yKey].plans.length === 1 && boardNow.days[yKey].plans[0].text === '昨日计划');
+  await handlers.get('data:save')({}, {
+    dateKey: tk,
+    plans: [{ id: 'p-t1', time: '9:00-10:00', text: '今日计划', createdAt: new Date().toISOString() }],
+    dones: [],
+  });
+  const j9 = readBoard();
+  check('S9 跨零点后新条目写入今日桶', !!j9.days[tk] && j9.days[tk].plans.some((p) => p.text === '今日计划'));
+  check('S9 昨日桶未被今日条目污染', !!j9.days[yKey] && j9.days[yKey].plans.length === 1 && j9.days[yKey].plans[0].text === '昨日计划');
+
+  /* 10. P2-2：AI/外部写入缺 id/空 id/重复 id 条目 → sanitize 回填唯一 id（plans 与 dones） */
+  await handlers.get('data:save')({}, {
+    dateKey: key,
+    plans: [
+      { time: '10:00-11:00', text: '无id条目A', createdAt: '' },
+      { id: '', time: '11:00-12:00', text: '空id条目B', createdAt: '' },
+      { id: 'p-custom-1', time: '12:00-13:00', text: '自定义id条目C', createdAt: '' },
+      { id: 'p-custom-1', time: '13:00-14:00', text: '重复id条目D', createdAt: '' },
+    ],
+    dones: [],
+  });
+  const j10 = readBoard();
+  const ids = j10.days[key].plans.map((p) => p.id);
+  check('S10 缺/空/重复 id 全部非空', ids.length === 4 && ids.every((s) => typeof s === 'string' && s.length > 0));
+  check('S10 回填后 id 唯一（含自定义 id 保留）', new Set(ids).size === 4 && ids[2] === 'p-custom-1' && ids[3] !== 'p-custom-1');
+  await handlers.get('data:save')({}, {
+    dateKey: key,
+    plans: j10.days[key].plans,
+    dones: [{ time: '', text: '无id已办', source: 'manual', completedAt: '' }],
+  });
+  const j10b = readBoard();
+  check('S10 dones 缺 id 回填', j10b.days[key].dones.length === 1 && typeof j10b.days[key].dones[0].id === 'string' && j10b.days[key].dones[0].id.length > 0);
 
   /* 8. 损坏恢复：.bak 备份 + 空数据重建 + 提示广播（design §2） */
   fs.writeFileSync(DATA_FILE, '{ this is broken json !!!', 'utf8');

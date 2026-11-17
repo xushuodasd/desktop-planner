@@ -85,9 +85,10 @@ function sanitizeBoard(raw, fallbackBallPos) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) continue; // 非日期键忽略
       const day = raw.days[key];
       if (!isObj(day)) continue;
+      const usedIds = new Set(); // 同一天内 id 去重（plans 与 dones 共用）
       b.days[key] = {
-        plans: sanitizePlans(day.plans),
-        dones: sanitizeDones(day.dones),
+        plans: sanitizePlans(day.plans, usedIds),
+        dones: sanitizeDones(day.dones, usedIds),
       };
     }
   }
@@ -110,13 +111,28 @@ function sanitizeBoard(raw, fallbackBallPos) {
   return b;
 }
 
-function sanitizePlans(list) {
+/** 回填/去重唯一 id（P2-2）：AI/外部写入的条目可能缺 id 或空 id，
+ *  渲染层按 id 定位行，缺省会导致错行；缺省则生成，与已用 id 冲突则重新生成。 */
+function ensureUniqueId(rawId, kind, used) {
+  let id = isStr(rawId) && rawId.trim() ? rawId.slice(0, 64) : '';
+  if (!id || used.has(id)) {
+    let n = 0;
+    do {
+      id = `${kind}-${Date.now()}-${n}`;
+      n += 1;
+    } while (used.has(id));
+  }
+  used.add(id);
+  return id;
+}
+
+function sanitizePlans(list, usedIds) {
   if (!Array.isArray(list)) return [];
   const out = [];
   for (const v of list) {
     if (!isObj(v) || !isStr(v.text) || !v.text.trim()) continue;
     out.push({
-      id: isStr(v.id) ? v.id.slice(0, 64) : '',
+      id: ensureUniqueId(v.id, 'p', usedIds),
       time: isStr(v.time) ? v.time.slice(0, 40) : '',
       text: v.text.slice(0, 200),
       createdAt: isStr(v.createdAt) ? v.createdAt.slice(0, 40) : '',
@@ -125,13 +141,13 @@ function sanitizePlans(list) {
   return out;
 }
 
-function sanitizeDones(list) {
+function sanitizeDones(list, usedIds) {
   if (!Array.isArray(list)) return [];
   const out = [];
   for (const v of list) {
     if (!isObj(v) || !isStr(v.text) || !v.text.trim()) continue;
     out.push({
-      id: isStr(v.id) ? v.id.slice(0, 64) : '',
+      id: ensureUniqueId(v.id, 'd', usedIds),
       time: isStr(v.time) ? v.time.slice(0, 40) : '',
       text: v.text.slice(0, 200),
       source: v.source === 'from-plan' ? 'from-plan' : 'manual',
@@ -168,6 +184,27 @@ function writeBoard(next) {
     }
   }
   lastOwnWrite = { text }; // 登记自身写入，供 fs.watch 守卫
+}
+
+let settingsFlushTimer = null;
+let settingsDirty = false;
+
+/** 设置类小改动防抖落盘（P2-3）：内存即时生效，300ms 内合并为一次原子写，避免滑杆写放大 */
+function persistBoardSoon(delayMs = 300) {
+  settingsDirty = true;
+  if (settingsFlushTimer) clearTimeout(settingsFlushTimer);
+  settingsFlushTimer = setTimeout(flushBoard, delayMs);
+}
+
+function flushBoard() {
+  if (settingsFlushTimer) {
+    clearTimeout(settingsFlushTimer);
+    settingsFlushTimer = null;
+  }
+  if (settingsDirty) {
+    settingsDirty = false;
+    writeBoard(board);
+  }
 }
 
 /** 从磁盘加载并校验；损坏则 .bak 备份后以空数据重建并提示（design §2） */
@@ -353,13 +390,9 @@ function createPanel() {
   panel.loadFile(path.join(APP_DIR, 'index.html'));
   applyAcrylic(panel);
   panel.on('close', guardHide);
-  // Esc 收起（主进程兜底，渲染层不响应也能收起）
-  panel.webContents.on('before-input-event', (event, input) => {
-    if (input.type === 'keyDown' && input.key === 'Escape') {
-      event.preventDefault();
-      hidePanel();
-    }
-  });
+  // Esc 语义由渲染层裁决（P2-1）：编辑态=取消编辑且面板不收起；非编辑态=收起面板。
+  // 见 renderer.js 的全局 keydown 监听；主进程不再无条件拦截（before-input-event 先于 DOM，
+  // 渲染层拦不住，会导致编辑态按 Esc 直接收起面板且编辑态残留）。
 }
 
 function workAreaForPoint(pt) {
@@ -449,7 +482,7 @@ function rebuildTrayMenu() {
       click: (item) => {
         applyAutostart(item.checked);
         board.settings.autostart = !!item.checked;
-        writeBoard(board);
+        persistBoardSoon(); // 与 settings:set 同走防抖落盘（P2-3）
         broadcastSettings();
         rebuildTrayMenu();
       },
@@ -491,9 +524,10 @@ function registerIpc() {
       if (!isObj(payload) || !validDateKey(payload.dateKey)) {
         return { ok: false, error: 'invalid payload' };
       }
+      const usedIds = new Set();
       board.days[payload.dateKey] = {
-        plans: sanitizePlans(payload.plans),
-        dones: sanitizeDones(payload.dones),
+        plans: sanitizePlans(payload.plans, usedIds),
+        dones: sanitizeDones(payload.dones, usedIds),
       };
       writeBoard(board);
       return { ok: true };
@@ -521,7 +555,7 @@ function registerIpc() {
         }
         // ballPosition 由主进程拖拽逻辑维护，渲染层传入的该字段忽略
       }
-      writeBoard(board);
+      persistBoardSoon(); // 防抖落盘（P2-3）：内存已更新，广播立即发出
       broadcastSettings();
       return { ok: true, settings: board.settings };
     } catch (err) {
@@ -621,8 +655,14 @@ if (!gotLock) {
 
 app.on('before-quit', () => {
   isQuitting = true;
-  // 退出前兜底保存悬浮球位置
+  // 退出前兜底：冲刷未落盘的设置（P2-3 防抖收尾）与悬浮球位置
   try {
+    let changed = settingsDirty;
+    if (settingsFlushTimer) {
+      clearTimeout(settingsFlushTimer);
+      settingsFlushTimer = null;
+    }
+    settingsDirty = false;
     if (ball && !ball.isDestroyed() && board) {
       const b = ball.getBounds();
       if (
@@ -631,9 +671,10 @@ app.on('before-quit', () => {
         board.settings.ballPosition.y !== b.y
       ) {
         board.settings.ballPosition = { x: b.x, y: b.y };
-        writeBoard(board);
+        changed = true;
       }
     }
+    if (changed) writeBoard(board);
   } catch (err) {
     console.error('[workboard] 退出保存位置失败：', err);
   }

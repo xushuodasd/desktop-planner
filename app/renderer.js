@@ -175,11 +175,9 @@ function renderPlans() {
         makeIconButton('取消', '✕', 'danger', cancel),
       );
       li.append(box, actions);
-      const onEnter = (ev) => { if (ev.key === 'Enter') commit(); };
-      const onEsc = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); cancel(); } };
-      timeInput.addEventListener('keydown', onEsc);
-      textInput.addEventListener('keydown', onEnter);
-      // 注意：编辑态按 Esc 不收起面板（stopPropagation 拦截于渲染层，主进程兜底不受影响）
+      // Esc 统一语义由 bindEvents 的全局 keydown 裁决（P2-1）：编辑态按 Esc = 取消编辑，面板不收起
+      timeInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') textInput.focus(); });
+      textInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') commit(); });
       setTimeout(() => textInput.focus(), 0);
     } else {
       const check = document.createElement('input');
@@ -339,9 +337,40 @@ darkMq.addEventListener('change', () => {
   if ((state.settings.theme || 'auto') === 'auto') document.body.dataset.theme = resolvedTheme();
 });
 
+/** 面板展开时检查跨零点（P1-2）：日期变更则重置 dateKey 并重拉当日数据，避免次日录入写入昨日 */
+async function refreshOnShow() {
+  const tk = todayKey();
+  if (tk === state.dateKey) return;
+  state.dateKey = tk;
+  editingPlanId = null;
+  try {
+    const r = await api.dataLoad();
+    const boardData = (r && r.board) || {};
+    const day = boardData.days && boardData.days[state.dateKey];
+    state.plans = (day && Array.isArray(day.plans)) ? day.plans : [];
+    state.dones = (day && Array.isArray(day.dones)) ? day.dones : [];
+    if (boardData.settings) state.settings = boardData.settings;
+  } catch (err) {
+    showToast('数据加载失败：' + err);
+  }
+  applySettings();
+  renderAll();
+}
+
 /* ---------------------------------- 事件绑定 ---------------------------------- */
 
 function bindEvents() {
+  // Esc 统一裁决（P2-1）：编辑态 = 取消编辑且面板不收起；非编辑态 = 收起面板
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    if (editingPlanId) {
+      editingPlanId = null;
+      renderPlans();
+    } else {
+      api.panelHide();
+    }
+  });
+
   // 底部主输入行（回车新增计划）
   const addFromComposer = () => {
     const time = el('planTimeInput').value.trim();
@@ -402,6 +431,11 @@ function bindEvents() {
       renderAll();
     }
     if (payload && payload.notice) showToast(payload.notice);
+  });
+
+  // 主进程推送：面板展开时检查跨零点（P1-2），日期变了就重置 dateKey 并重拉当日数据
+  api.onPanelChanged((payload) => {
+    if (payload && payload.visible === true) refreshOnShow();
   });
 
   api.onSettingsChanged((payload) => {
