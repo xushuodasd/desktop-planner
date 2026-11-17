@@ -1,0 +1,4 @@
+runtime/
+data/
+*.lnk
+node_modules/

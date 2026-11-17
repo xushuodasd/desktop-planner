@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- CSP：仅自身资源，无远程内容 -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'" />
+  <title>悬浮工作台</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="ball-root" id="ballRoot" title="悬浮工作台：点击开合面板，按住拖动">
+    <!-- 悬浮球本体：渐变圆球 + 对勾母题（内嵌 SVG，保证精致无外部资源） -->
+    <svg class="ball-svg" viewBox="0 0 56 56" aria-label="悬浮工作台">
+      <defs>
+        <radialGradient id="ballGrad" cx="35%" cy="28%" r="80%">
+          <stop offset="0%" stop-color="#7fb3ff" />
+          <stop offset="45%" stop-color="#2f7cf6" />
+          <stop offset="100%" stop-color="#114acc" />
+        </radialGradient>
+        <linearGradient id="glossGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#ffffff" stop-opacity="0.55" />
+          <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+        </linearGradient>
+        <filter id="ballShadow" x="-30%" y="-30%" width="160%" height="160%">
+          <feDropShadow dx="0" dy="1.5" stdDeviation="1.8" flood-color="#0a1c3f" flood-opacity="0.45" />
+        </filter>
+      </defs>
+      <g filter="url(#ballShadow)">
+        <circle cx="28" cy="28" r="25" fill="url(#ballGrad)" />
+        <!-- 高光，营造球体质感 -->
+        <ellipse cx="21" cy="17" rx="13" ry="8.5" fill="url(#glossGrad)" />
+        <!-- 对勾母题 -->
+        <path d="M17 29.5 L24.5 37 L39.5 21.5"
+              fill="none" stroke="#ffffff" stroke-width="4.5"
+              stroke-linecap="round" stroke-linejoin="round"
+              opacity="0.96" />
+      </g>
+    </svg>
+  </div>
+  <script src="ball.js"></script>
+</body>
+</html>
