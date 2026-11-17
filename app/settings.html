@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- CSP：仅允许自身资源，禁止任何远程内容与内联脚本（REQ-008 / design §4） -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'" />
+  <title>设置 - 悬浮工作台</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="settings-body">
+  <main class="settings-page">
+    <h1 class="settings-title">设置</h1>
+
+    <section class="settings-group">
+      <div class="settings-item-row">
+        <div class="settings-item-text">
+          <div class="settings-item-label">透明度</div>
+          <div class="settings-item-desc">背景透出程度，可调 20% – 100%</div>
+        </div>
+        <span class="settings-item-value" id="opacityValue">50%</span>
+      </div>
+      <input type="range" id="opacitySlider" min="20" max="100" step="1" value="50" />
+    </section>
+
+    <section class="settings-group">
+      <div class="settings-item-row">
+        <div class="settings-item-text">
+          <div class="settings-item-label">主题</div>
+          <div class="settings-item-desc">跟随系统，或固定浅色 / 深色</div>
+        </div>
+        <select id="themeSelect" class="select">
+          <option value="auto">跟随系统</option>
+          <option value="light">浅色</option>
+          <option value="dark">深色</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="settings-group">
+      <label class="settings-item-row settings-toggle">
+        <div class="settings-item-text">
+          <div class="settings-item-label">开机自启</div>
+          <div class="settings-item-desc">登录 Windows 后自动在托盘运行</div>
+        </div>
+        <input type="checkbox" id="autostartToggle" />
+      </label>
+    </section>
+  </main>
+
+  <script src="settings.js"></script>
+</body>
+</html>

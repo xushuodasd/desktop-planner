@@ -10,7 +10,8 @@ if not exist "runtime\DesktopPlanner.exe" (
   exit /b 1
 )
 echo Starting...
-start "" "runtime\DesktopPlanner.exe" "%~dp0app"
+if not exist "data\appdata" mkdir "data\appdata"
+start "" "runtime\DesktopPlanner.exe" --no-sandbox "--user-data-dir=%~dp0data\appdata" "%~dp0app"
 timeout /t 2 /nobreak >nul
 tasklist /FI "IMAGENAME eq DesktopPlanner.exe" | find /I "DesktopPlanner.exe" >nul
 if errorlevel 1 (

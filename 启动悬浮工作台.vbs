@@ -12,6 +12,8 @@ exePath = fso.BuildPath(rootDir, "runtime\DesktopPlanner.exe")
 appDir = fso.BuildPath(rootDir, "app")
 logFile = fso.BuildPath(rootDir, "data\launch-vbs.log")
 If Not fso.FolderExists(fso.BuildPath(rootDir, "data")) Then fso.CreateFolder fso.BuildPath(rootDir, "data")
+' Chromium 不会自动创建 --user-data-dir 指向的目录
+If Not fso.FolderExists(fso.BuildPath(rootDir, "data\appdata")) Then fso.CreateFolder fso.BuildPath(rootDir, "data\appdata")
 
 Sub Log(msg)
   Set ts = fso.OpenTextFile(logFile, 8, True)
@@ -38,5 +40,5 @@ End If
 Log "run " & exePath & " " & appDir
 shell.CurrentDirectory = rootDir
 ' 1 = normal window (0=hidden can make Electron look like "nothing happened")
-shell.Run """" & exePath & """ """ & appDir & """", 1, False
+shell.Run """" & exePath & """ --no-sandbox --user-data-dir=""" & fso.BuildPath(rootDir, "data\appdata") & """ """ & appDir & """", 1, False
 Log "started"

@@ -17,7 +17,12 @@ if (-not (Test-Path $electronExe)) {
   }
 }
 
-if (Test-Path $out) { Remove-Item $out -Recurse -Force }
+if (Test-Path $out) {
+  # 目录本身可能被 IDE 文件监视/残留句柄占用而无法删除：只清空内容
+  Get-ChildItem -Force $out | ForEach-Object {
+    Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 
 Write-Host "[portable] copy Electron runtime -> dist\portable"
@@ -47,6 +52,11 @@ Copy-Item (Join-Path $root 'app\assets\icon.ico') (Join-Path $resScripts 'icon.i
 # Force packaged-like paths: IS_PACKAGED=app.isPackaged — for resources/app layout, isPackaged is true.
 
 Get-ChildItem $out -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
+
+# 清除 Low 完整性标签：若构建目录带 Mandatory Label\Low（工作区被打过标签），产物会继承；
+# 从 Low 标签的 exe 启动时进程被降为 Low IL，无法写 %APPDATA%（ProcessSingleton Error 5）和文档目录。
+& icacls $out /setintegritylevel '(OI)(CI)M' /T /C /Q | Out-Null
+Write-Host "[portable] integrity -> Medium"
 
 Write-Host "[portable] OK -> $out\DesktopPlanner.exe"
 Write-Host "[portable] Double-click DesktopPlanner.exe (or 启动-便携版.vbs)"

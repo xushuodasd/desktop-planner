@@ -76,7 +76,7 @@ $lnkPath = Join-Path $root '启动悬浮工作台.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($lnkPath)
 $shortcut.TargetPath = $appExe
-$shortcut.Arguments = "`"$appDir`""
+$shortcut.Arguments = "`"$appDir`" --no-sandbox --user-data-dir=`"$root\data\appdata`""
 $shortcut.WorkingDirectory = $root
 $shortcut.IconLocation = "$iconPath,0"
 $shortcut.Description = '悬浮工作台：桌面悬浮工作计划板'

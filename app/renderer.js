@@ -11,7 +11,7 @@ const state = {
   dateKey: '',
   plans: [],
   dones: [],
-  settings: { opacity: 0.72, theme: 'auto', autostart: false, ballPosition: null },
+  settings: { opacity: 0.5, theme: 'auto', autostart: false, panelPosition: null },
   view: 'plans', // plans | dones
 };
 
@@ -379,13 +379,8 @@ function resolvedTheme() {
 }
 
 function applySettings() {
-  const opacity = typeof state.settings.opacity === 'number' ? state.settings.opacity : 0.72;
+  const opacity = typeof state.settings.opacity === 'number' ? state.settings.opacity : 0.5;
   document.documentElement.style.setProperty('--panel-alpha', String(opacity));
-  const slider = el('opacitySlider');
-  if (document.activeElement !== slider) slider.value = String(Math.round(opacity * 100));
-  el('opacityValue').textContent = `${Math.round(opacity * 100)}%`;
-  const select = el('themeSelect');
-  if (document.activeElement !== select) select.value = state.settings.theme || 'auto';
   document.body.dataset.theme = resolvedTheme();
 }
 
@@ -443,17 +438,10 @@ function bindEvents() {
 
   el('tabPlans').addEventListener('click', () => setView('plans'));
   el('tabDones').addEventListener('click', () => setView('dones'));
-  el('btnCollapse').addEventListener('click', () => api.panelHide());
+  // 面板贴顶隐藏后，靠鼠标进出窗口滑出/收回（是否响应由主进程判断）
+  document.addEventListener('mouseenter', () => api.panelHover(true));
+  document.addEventListener('mouseleave', () => api.panelHover(false));
 
-  el('opacitySlider').addEventListener('input', () => {
-    const v = Number(el('opacitySlider').value) / 100;
-    document.documentElement.style.setProperty('--panel-alpha', String(v));
-    el('opacityValue').textContent = `${el('opacitySlider').value}%`;
-    saveSettings({ opacity: v });
-  });
-  el('themeSelect').addEventListener('change', () => {
-    saveSettings({ theme: el('themeSelect').value });
-  });
 
   api.onDataChanged((payload) => {
     if (payload && payload.board) {
@@ -492,10 +480,11 @@ async function init() {
   } catch (err) {
     showToast('数据加载失败：' + err);
   }
-  // 已有用户若透明度偏实，轻轻拉高一点玻璃感（仅当仍是旧默认 0.85）
-  if (Math.abs((state.settings.opacity || 0) - 0.85) < 0.001) {
-    state.settings.opacity = 0.72;
-    saveSettings({ opacity: 0.72 });
+  // 旧版本的默认透明度（0.85 / 0.72）统一切到新默认 50%，用户手动调过的值不动
+  const opacity = Number(state.settings.opacity);
+  if (Math.abs(opacity - 0.85) < 0.001 || Math.abs(opacity - 0.72) < 0.001) {
+    state.settings.opacity = 0.5;
+    saveSettings({ opacity: 0.5 });
   }
   applySettings();
   bindEvents();

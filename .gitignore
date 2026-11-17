@@ -12,4 +12,5 @@ data/electron-out.log
 data/el.log
 data/launch-*.log
 debug.log
+.trae-html-share-packages/
 

@@ -52,6 +52,7 @@ internal static class Program
 
             var menu = new ContextMenuStrip();
             menu.Items.Add("打开/收起面板", null, (s, e) => OpenPanel(exePath, appDir, rootDir));
+            menu.Items.Add("设置…", null, (s, e) => OpenPanel(exePath, appDir, rootDir, true));
             menu.Items.Add("退出", null, (s, e) => Quit());
 
             var notify = new NotifyIcon();
@@ -104,14 +105,21 @@ internal static class Program
         return "";
     }
 
-    static void OpenPanel(string exePath, string appDir, string rootDir)
+    static void OpenPanel(string exePath, string appDir, string rootDir, bool openSettings = false)
     {
         try
         {
+            string ud = string.IsNullOrEmpty(appDir)
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "desktop-planner", "appdata")
+                : Path.Combine(rootDir, "data", "appdata");
+            string args = "--no-sandbox --user-data-dir=\"" + ud + "\"";
+            Directory.CreateDirectory(ud);
+            if (!string.IsNullOrEmpty(appDir)) args += " \"" + appDir + "\"";
+            if (openSettings) args += " --open-settings";
             Process.Start(new ProcessStartInfo
             {
                 FileName = exePath,
-                Arguments = "\"" + appDir + "\"",
+                Arguments = args,
                 WorkingDirectory = rootDir,
                 UseShellExecute = false,
             });

@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('workboard', {
   dataLoad: () => ipcRenderer.invoke('data:load'),
   dataSave: (payload) => ipcRenderer.invoke('data:save', payload),
 
-  // 设置（透明度/主题/自启；ballPosition 由主进程维护）
+  // 设置（透明度/主题/自启；panelPosition 由主进程维护）
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
 
@@ -26,12 +26,7 @@ contextBridge.exposeInMainWorld('workboard', {
   panelToggle: () => ipcRenderer.invoke('panel:toggle'),
   panelShow: () => ipcRenderer.invoke('panel:show'),
   panelHide: () => ipcRenderer.invoke('panel:hide'),
-
-  // 悬浮球拖动 / 边缘吸附悬停（只上报坐标与悬停态，判定在主进程）
-  ballDragStart: (pt) => ipcRenderer.invoke('ball:drag-start', pt),
-  ballDragMove: (pt) => ipcRenderer.invoke('ball:drag-move', pt),
-  ballDragEnd: (pt) => ipcRenderer.invoke('ball:drag-end', pt),
-  ballHover: (inside) => ipcRenderer.invoke('ball:hover', !!inside),
+  panelHover: (inside) => ipcRenderer.send('panel:hover', !!inside),
 
   // 主进程推送（白名单事件）
   onDataChanged: (cb) => subscribe('data:onchange', cb),

@@ -61,18 +61,19 @@ async function main() {
   const j0 = readBoard();
   check('S1 schemaVersion=1', j0.schemaVersion === 1);
   check('S1 days 为空对象', j0.days && typeof j0.days === 'object' && Object.keys(j0.days).length === 0);
-  check('S1 settings 默认值(0.85/auto/false)',
-    j0.settings && j0.settings.opacity === 0.85 && j0.settings.theme === 'auto' && j0.settings.autostart === false);
+  check('S1 settings 默认值(0.5/auto/false)',
+    j0.settings && j0.settings.opacity === 0.5 && j0.settings.theme === 'auto' && j0.settings.autostart === false);
   const wa = electron.__fakeApi.WORK_AREA;
-  const bp = j0.settings.ballPosition;
-  check('S1 默认 ballPosition 在工作区内',
-    bp && bp.x >= wa.left && bp.x + 56 <= wa.right && bp.y >= wa.top && bp.y + 56 <= wa.bottom,
+  const bp = j0.settings.panelPosition;
+  check('S1 默认 panelPosition 在工作区内',
+    bp && bp.x >= wa.left && bp.x + 360 <= wa.right && bp.y >= wa.top && bp.y + 560 <= wa.bottom,
     JSON.stringify(bp));
 
   const handlers = electron.__ipcHandlers;
-  const need = ['data:load', 'data:save', 'settings:get', 'settings:set', 'panel:toggle', 'panel:show', 'panel:hide', 'ball:drag-start', 'ball:drag-move', 'ball:drag-end'];
+  const need = ['data:load', 'data:save', 'settings:get', 'settings:set', 'panel:toggle', 'panel:show', 'panel:hide'];
   check('S2 IPC 白名单全部注册', need.every((ch) => handlers.has(ch)),
     need.filter((ch) => !handlers.has(ch)).join(',') || 'all');
+  check('S2 悬浮球通道已移除', ![...handlers.keys()].some((ch) => ch.startsWith('ball:')));
 
   const now = new Date();
   const key = keyOf(now);
@@ -111,14 +112,14 @@ async function main() {
   const j2 = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
   j2.days[key].plans[0].text = 12345; // 非法：text 非字符串 → 该条忽略
   j2.days[key].plans[0].evil = 'hack';
-  j2.settings.opacity = 0.3; // 非法：低于 0.6 → 夹取 0.6
+  j2.settings.opacity = 0.05; // 非法：低于 0.2 → 夹取 0.2
   fs.writeFileSync(DATA_FILE, JSON.stringify(j2, null, 2) + '\n', 'utf8');
   await sleep(800);
   const ev5 = electron.__webContentsSendLog.filter((x) => x.ev === 'data:onchange');
   const last5 = ev5[ev5.length - 1];
   const planAfter = last5 && last5.payload.board.days[key].plans[0];
   check('S5 非法条目被忽略（text 非字符串→条目丢弃）', !planAfter);
-  check('S5 opacity 夹取至 0.6–1', last5 && last5.payload.board.settings.opacity === 0.6,
+  check('S5 opacity 夹取至 0.2–1', last5 && last5.payload.board.settings.opacity === 0.2,
     String(last5 && last5.payload.board.settings.opacity));
   const rawOnDisk = fs.readFileSync(DATA_FILE, 'utf8');
   check('S5 原文件未被回写覆盖（保留 evil 字段）', rawOnDisk.includes('evil'));
@@ -137,21 +138,19 @@ async function main() {
   const j3b = readBoard();
   check('S6 越界夹取与自启开关最终落盘', j3b.settings.opacity === 1 && j3b.settings.theme === 'dark' && j3b.settings.autostart === true);
 
-  /* 7. panel:toggle 与拖动落盘（REQ-001/002） */
+  /* 7. panel:toggle 与面板位置落盘（REQ-001/002；球已移除） */
   const r3 = await handlers.get('panel:toggle')({});
-  const panel = electron.__fakeApi.FakeBrowserWindow.all[1];
-  check('S7 panel:toggle 返回 visible', r3 && typeof r3.visible === 'boolean' && panel.visible === r3.visible);
-  const ball = electron.__fakeApi.FakeBrowserWindow.all[0];
-  await handlers.get('ball:drag-start')({}, { x: 2000, y: 200 });
-  const mv = await handlers.get('ball:drag-move')({}, { x: 2050, y: 230 });
-  check('S7 drag-move 判定为拖动', mv && mv.moved === true);
-  const r4 = await handlers.get('ball:drag-end')({}, { x: 2050, y: 230 });
+  const panel = electron.__fakeApi.FakeBrowserWindow.all[0];
+  check('S7 panel:toggle 返回 visible', r3 && typeof r3.visible === 'boolean' && panel.isVisible() === r3.visible);
+  if (!panel.isVisible()) await handlers.get('panel:toggle')({});
+  await sleep(400); // 等 showPanel 的 suppressPanelSync（300ms）结束
+  panel.setBounds({ x: 300, y: 240, width: 360, height: 560 });
+  (panel.handlers.move || []).forEach((fn) => fn());
+  await sleep(900); // 260ms 吸顶判定 + 260ms 位置防抖 + 300ms 写盘防抖
   const j4 = readBoard();
-  const b = ball.getBounds();
-  check('S7 拖动结束记忆位置并夹取工作区',
-    r4 && r4.clicked === false && j4.settings.ballPosition.x === b.x && j4.settings.ballPosition.y === b.y
-    && b.x >= wa.left && b.x + 56 <= wa.right && b.y >= wa.top && b.y + 56 <= wa.bottom,
-    JSON.stringify({ saved: j4.settings.ballPosition, bounds: { x: b.x, y: b.y } }));
+  check('S7 面板位置落盘（panelPosition）',
+    !!j4.settings.panelPosition && j4.settings.panelPosition.x === 300 && j4.settings.panelPosition.y === 240,
+    JSON.stringify(j4.settings.panelPosition));
 
   /* 9. 跨零点（P1-2 数据层回归防线）：昨日桶存在 + 渲染层跨零点后以新 dateKey 保存 →
    *    新条目落入今日桶、昨日桶完好。渲染层协议为 onPanelChanged(visible) → 重算 todayKey →

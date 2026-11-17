@@ -52,6 +52,11 @@ class FakeBrowserWindow {
   hide() { this.visible = false; }
   isVisible() { return this.visible; }
   on(ev, cb) { (this.handlers[ev] = this.handlers[ev] || []).push(cb); }
+  once(ev, cb) { this.on(ev, cb); }
+  setSize(w, h) { this.bounds.width = w; this.bounds.height = h; }
+  setIcon() {}
+  setResizable() {}
+  setSkipTaskbar() {}
   setAlwaysOnTop() {}
   setBackgroundMaterial() {}
   isDestroyed() { return false; }
@@ -67,11 +72,13 @@ class FakeTray {
 }
 
 const ipcHandlers = new Map();
+const ipcOnHandlers = new Map();
 const ipcMain = {
   handle: (channel, fn) => { ipcHandlers.set(channel, fn); },
+  on: (channel, fn) => { ipcOnHandlers.set(channel, fn); },
 };
 
-const WORK_AREA = { left: 0, top: 0, right: 1920, bottom: 1040 };
+const WORK_AREA = { x: 0, y: 0, width: 1920, height: 1040, left: 0, top: 0, right: 1920, bottom: 1040 };
 const screen = {
   getPrimaryDisplay: () => ({ workArea: { ...WORK_AREA } }),
   getDisplayNearestPoint: () => ({ workArea: { ...WORK_AREA } }),
@@ -91,8 +98,8 @@ const app = {
 
 const Menu = { buildFromTemplate: (template) => ({ template }) };
 const nativeImage = {
-  createFromPath: () => ({}),
-  createEmpty: () => ({}),
+  createFromPath: () => ({ isEmpty: () => true, resize: () => ({}) }),
+  createEmpty: () => ({ isEmpty: () => true }),
 };
 
 module.exports = {
@@ -104,6 +111,7 @@ module.exports = {
   screen,
   nativeImage,
   __ipcHandlers: ipcHandlers,
+  __ipcListeners: ipcOnHandlers,
   __webContentsSendLog: webContentsSendLog,
   __fakeApi: { FakeBrowserWindow, FakeTray, WORK_AREA },
 };

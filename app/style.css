@@ -1,9 +1,9 @@
 /* 悬浮工作台 —— 苹果风毛玻璃：高透、轻边、待办/已办分页 */
 
 :root {
-  --panel-alpha: 0.72;
-  /* 罩色更淡，让系统 acrylic 真正透出来 */
-  --glass: calc(0.10 + var(--panel-alpha) * 0.22);
+  --panel-alpha: 0.5;
+  /* 逐像素透明窗口：滑块直接决定面板底色不透明度 */
+  --glass: calc(0.16 + var(--panel-alpha) * 0.72);
   --radius-lg: 20px;
   --radius-md: 14px;
   --radius-sm: 12px;
@@ -67,7 +67,7 @@ body.panel-body { padding: 0; background: transparent; }
   flex-direction: column;
   gap: 0;
   padding: 16px 16px 14px;
-  border-radius: 0;
+  border-radius: var(--radius-lg);
   background: linear-gradient(180deg, var(--bg-1), var(--bg-2));
   border: none;
   box-shadow: none;
@@ -85,8 +85,8 @@ body.panel-body { padding: 0; background: transparent; }
 }
 .topbar-main {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  align-items: center;
+  justify-content: flex-start;
   gap: 12px;
 }
 
@@ -153,36 +153,6 @@ body.panel-body { padding: 0; background: transparent; }
 }
 .panel[data-view="dones"] .seg-thumb { transform: translateX(100%); }
 
-.traffic-btn {
-  width: 12px;
-  height: 12px;
-  border: none;
-  border-radius: 50%;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
-  transition: filter 0.15s ease, transform 0.12s ease;
-}
-.traffic-close {
-  background: linear-gradient(180deg, #ff5f57, #ff3b30);
-  color: transparent;
-}
-.traffic-close .traffic-icon {
-  width: 7px;
-  height: 7px;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-.topbar:hover .traffic-close .traffic-icon,
-.traffic-close:focus-visible .traffic-icon {
-  opacity: 1;
-  color: rgba(80, 0, 0, 0.72);
-}
-.traffic-close:hover { filter: brightness(1.05); }
-.traffic-close:active { transform: scale(0.92); }
 
 .toast {
   margin-bottom: 8px;
@@ -416,26 +386,6 @@ body.panel-body { padding: 0; background: transparent; }
 .input-time { width: 108px; flex: none; }
 .input-text { flex: 1; min-width: 0; }
 
-.settings-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 2px;
-}
-.setting-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--text-3);
-}
-.opacity-item { flex: 1; }
-.setting-value {
-  min-width: 34px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-2);
-}
 
 input[type="range"] {
   flex: 1;
@@ -458,23 +408,81 @@ input[type="range"] {
 .select:hover { background: rgba(120, 120, 128, 0.18); }
 .select:focus { box-shadow: 0 0 0 3px var(--accent-soft); }
 
-/* ---------- 悬浮球 ---------- */
-.ball-root {
-  width: 100%;
+/* ---------- 设置窗口（托盘右键「设置…」） ---------- */
+body.settings-body {
+  padding: 0;
+  background: transparent;
+}
+
+.settings-page {
   height: 100%;
   display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 18px 20px;
+  background: linear-gradient(180deg, var(--bg-1), var(--bg-2));
+  overflow-y: auto;
+}
+
+.settings-title {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.settings-item-row {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  background: transparent;
-  cursor: grab;
-  -webkit-app-region: no-drag;
+  justify-content: space-between;
+  gap: 12px;
 }
-.ball-root.dragging { cursor: grabbing; }
-.ball-root:active .ball-svg { transform: scale(0.96); }
-.ball-svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-  filter: drop-shadow(0 4px 10px rgba(0, 122, 255, 0.28));
-  transition: transform 0.15s cubic-bezier(0.22, 1, 0.36, 1);
+
+.settings-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
+
+.settings-item-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-item-desc {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.settings-item-value {
+  font-size: 12px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-toggle { cursor: pointer; }
+
+input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ---------- 面板：标题区可拖动 ---------- */
+
+/* 顶部标题区作为窗口拖动把手（分页保持可点击） */
+.topbar-main { -webkit-app-region: drag; }
+.topbar .seg,
+.topbar .seg-btn { -webkit-app-region: no-drag; }

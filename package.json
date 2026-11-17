@@ -6,7 +6,7 @@
   "author": "desktop-planner",
   "license": "MIT",
   "scripts": {
-    "start": "electron app",
+    "start": "electron app --no-sandbox --user-data-dir=data/appdata",
     "dist": "node scripts/run-dist.js",
     "dist:dir": "node scripts/run-dist.js --dir"
   },
@@ -69,6 +69,8 @@
       "createStartMenuShortcut": true,
       "shortcutName": "悬浮工作台",
       "uninstallDisplayName": "悬浮工作台",
+      "runAfterFinish": false,
+      "include": "scripts/installer.nsh",
       "installerLanguages": [
         "zh_CN",
         "en_US"
