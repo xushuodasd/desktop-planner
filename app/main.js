@@ -188,6 +188,8 @@ let panelAnimating = false; // 滑入/滑出动画进行中，忽略 move 事件
 let dockCheckTimer = null;
 let dockHideTimer = null;
 let dockSlideTimer = null;
+let dockRevealTimer = null;
+let dockPollTimer = null; // 贴顶状态下的光标轮询（渲染层 enter/leave 在窗口滑动、打字时不可靠）
 
 let watcher = null;
 let monthWatcher = null; // months/ 目录监听（外部改月份分片时刷新面板/回顾窗口）
@@ -1034,7 +1036,10 @@ function sendPanelState() {
 
   if (panel && !panel.isDestroyed()) {
 
-    panel.webContents.send('panel:onchange', { visible: panel.isVisible() });
+    panel.webContents.send('panel:onchange', {
+      visible: panel.isVisible(),
+      dock: panelDock ? (panelDock.revealed ? 'revealed' : 'tucked') : 'free',
+    });
 
   }
 
@@ -1066,7 +1071,11 @@ function schedulePanelPositionSave() {
 function resetPanelDock() {
   clearTimeout(dockCheckTimer);
   clearTimeout(dockHideTimer);
-  clearInterval(dockSlideTimer);
+  clearTimeout(dockSlideTimer);
+  clearTimeout(dockRevealTimer);
+  dockHideTimer = null;
+  dockRevealTimer = null;
+  stopDockPoll();
   panelAnimating = false;
   panelDock = null;
 }
@@ -1090,24 +1099,94 @@ function checkPanelDock() {
   if (pb.y >= wa.top + UNDOCK_DIST) undockPanel();
 }
 
-/** 竖向滑动面板（只改 y）；动画期间忽略 move 事件，避免和跟随/吸顶互相触发 */
-function slidePanelTo(y) {
+/** 缓动曲线：弹出指数缓出（起步快、落位稳），收起三次缓入（干脆离开） */
+function easeOutExpo(t) {
+  return t >= 1 ? 1 : 1 - Math.pow(2, -10 * t);
+}
+function easeInCubic(t) {
+  return t * t * t;
+}
+
+/** 竖向滑动面板（时间基准，16ms 一帧，可被反向操作从当前位置打断）；只改 y */
+function slidePanelTo(y, duration, ease) {
   if (!panel || panel.isDestroyed()) return;
-  clearInterval(dockSlideTimer);
+  clearTimeout(dockSlideTimer);
   const pb = panel.getBounds();
   const from = pb.y;
-  const steps = 8;
-  let i = 0;
+  const dist = y - from;
+  if (!dist) return;
+  const start = Date.now();
+  const easing = ease || easeOutExpo;
   panelAnimating = true;
-  dockSlideTimer = setInterval(() => {
-    if (!panel || panel.isDestroyed()) { clearInterval(dockSlideTimer); panelAnimating = false; return; }
-    i += 1;
-    panel.setBounds({ x: pb.x, y: Math.round(from + (y - from) * (i / steps)), width: PANEL_W, height: PANEL_H });
-    if (i >= steps) {
-      clearInterval(dockSlideTimer);
-      panelAnimating = false;
+  const tick = () => {
+    if (!panel || panel.isDestroyed()) { panelAnimating = false; return; }
+    const t = Math.min(1, (Date.now() - start) / duration);
+    panel.setBounds({
+      x: pb.x,
+      y: Math.round(from + dist * easing(t)),
+      width: PANEL_W,
+      height: PANEL_H,
+    });
+    if (t >= 1) { panelAnimating = false; return; }
+    dockSlideTimer = setTimeout(tick, 16);
+  };
+  tick();
+}
+
+function startDockPoll() {
+  if (dockPollTimer) return;
+  dockPollTimer = setInterval(pollDockCursor, 140);
+}
+
+function stopDockPoll() {
+  clearInterval(dockPollTimer);
+  dockPollTimer = null;
+}
+
+function scheduleReveal() {
+  if (dockRevealTimer) return;
+  dockRevealTimer = setTimeout(() => {
+    dockRevealTimer = null;
+    if (panelDock && panelDock.docked && !panelDock.revealed) revealPanel();
+  }, 90);
+}
+
+function scheduleTuck() {
+  if (dockHideTimer) return;
+  dockHideTimer = setTimeout(() => {
+    dockHideTimer = null;
+    if (panelDock && panelDock.docked && panelDock.revealed) tuckPanel();
+  }, 450);
+}
+
+/**
+ * 以光标真实坐标为准：renderer 的 mouseleave 在「窗口滑动中」「用户在输入框打字、鼠标不动」
+ * 时都会误报，曾导致打字时面板自己收回。这里只用屏幕坐标判断在不在面板/细边内。
+ */
+function pollDockCursor() {
+  if (!panel || panel.isDestroyed() || !panel.isVisible()) { stopDockPoll(); return; }
+  if (!panelDock || !panelDock.docked) { stopDockPoll(); return; }
+  const pt = screen.getCursorScreenPoint();
+  const pb = panel.getBounds();
+  const wa = workAreaForPoint(pt);
+  const inPanel = pt.x >= pb.x && pt.x <= pb.x + pb.width &&
+    pt.y >= pb.y && pt.y <= pb.y + pb.height;
+  if (!panelDock.revealed) {
+    const inStrip = pt.x >= pb.x && pt.x <= pb.x + pb.width &&
+      pt.y >= wa.top - 2 && pt.y <= wa.top + DOCK_STRIP + 2;
+    if (inStrip) scheduleReveal();
+    else {
+      clearTimeout(dockRevealTimer);
+      dockRevealTimer = null;
     }
-  }, 14);
+    return;
+  }
+  if (inPanel) {
+    clearTimeout(dockHideTimer);
+    dockHideTimer = null;
+  } else if (!panelAnimating) {
+    scheduleTuck();
+  }
 }
 
 function tuckPanel() {
@@ -1115,7 +1194,9 @@ function tuckPanel() {
   const pb = panel.getBounds();
   const wa = workAreaForPoint({ x: Math.round(pb.x + pb.width / 2), y: Math.round(pb.y + pb.height / 2) });
   panelDock = { docked: true, revealed: false };
-  slidePanelTo(wa.top - (PANEL_H - DOCK_STRIP));
+  sendPanelState();
+  startDockPoll();
+  slidePanelTo(wa.top - (PANEL_H - DOCK_STRIP), 220, easeInCubic);
 }
 
 function revealPanel() {
@@ -1124,28 +1205,49 @@ function revealPanel() {
   const pb = panel.getBounds();
   const wa = workAreaForPoint({ x: Math.round(pb.x + pb.width / 2), y: Math.round(pb.y + pb.height / 2) });
   panelDock.revealed = true;
-  slidePanelTo(wa.top);
+  sendPanelState();
+  slidePanelTo(wa.top, 280, easeOutExpo);
 }
 
 function undockPanel() {
   if (!panelDock || !panelDock.docked) return;
   panelDock = null;
+  clearTimeout(dockHideTimer);
+  clearTimeout(dockRevealTimer);
+  dockHideTimer = null;
+  dockRevealTimer = null;
+  stopDockPoll();
   schedulePanelPositionSave();
 }
 
 ipcMain.on('panel:hover', (evt, inside) => {
   if (!panel || panel.isDestroyed()) return;
   if (evt.sender !== panel.webContents) return;
+  if (!panelDock || !panelDock.docked) return;
   if (inside) {
     clearTimeout(dockHideTimer);
-    if (panelDock && panelDock.docked && !panelDock.revealed) revealPanel();
+    dockHideTimer = null;
+    if (!panelDock.revealed) scheduleReveal();
     return;
   }
-  if (!panelDock || !panelDock.docked || !panelDock.revealed) return;
-  clearTimeout(dockHideTimer);
-  dockHideTimer = setTimeout(() => {
-    if (panelDock && panelDock.docked && panelDock.revealed) tuckPanel();
-  }, 450);
+  // 离开事件只用于「提前」收起：以光标真实位置为准，避免打字/窗口滑动时的误报把面板收走
+  const pt = screen.getCursorScreenPoint();
+  const pb = panel.getBounds();
+  const inPanel = pt.x >= pb.x && pt.x <= pb.x + pb.width &&
+    pt.y >= pb.y && pt.y <= pb.y + pb.height;
+  if (!panelDock.revealed) {
+    if (!inPanel) {
+      const wa = workAreaForPoint(pt);
+      const inStrip = pt.x >= pb.x && pt.x <= pb.x + pb.width &&
+        pt.y >= wa.top - 2 && pt.y <= wa.top + DOCK_STRIP + 2;
+      if (!inStrip) {
+        clearTimeout(dockRevealTimer);
+        dockRevealTimer = null;
+      }
+    }
+    return;
+  }
+  if (!inPanel && !panelAnimating) scheduleTuck();
 });
 
 function showPanel(focus) {
@@ -1159,6 +1261,7 @@ function showPanel(focus) {
   else if (!panel.isVisible()) panel.showInactive();
 
   positionPanelFromSettings();
+  if (panelDock && panelDock.docked) startDockPoll();
 
   panel.setSkipTaskbar(true);
 

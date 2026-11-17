@@ -76,6 +76,7 @@
 | 行进入、编辑卡进入 | 260–340ms | `--spring` |
 | 勾选 / 删除确认 / 悬停 | 160–220ms | ease 或 `--spring` |
 | 分段控件滑块 | 360ms | `--spring` |
+| 贴顶滑出 / 收起 | 280ms / 220ms | `easeOutExpo` / `easeInCubic`（主进程时间基准，16ms 帧），内容叠加 7px / 5px 惯性位移 |
 
 - 动画只改变 `opacity` / `transform` / `height` 类可合成属性；不得用 `display` 切换做过渡。
 - 不得添加无限循环动画、发光呼吸、粒子、视差等装饰性效果。

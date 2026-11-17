@@ -747,6 +747,14 @@ function bindEvents() {
 
   api.onPanelChanged((payload) => {
     if (payload && payload.visible === true) refreshOnShow();
+    if (!payload || !payload.dock) return;
+    document.body.classList.remove('dock-reveal', 'dock-tuck');
+    if (payload.dock === 'revealed') {
+      void document.body.offsetWidth; // 强制重排，保证同一动画可重放
+      document.body.classList.add('dock-reveal');
+    } else if (payload.dock === 'tucked') {
+      document.body.classList.add('dock-tuck');
+    }
   });
 
   api.onSettingsChanged((payload) => {

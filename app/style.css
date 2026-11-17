@@ -95,6 +95,18 @@ body.panel-body { padding: 0; background: transparent; }
   -webkit-backdrop-filter: blur(52px) saturate(1.75);
 }
 
+/* 贴顶滑出/收回：窗口位移之外，内容再做一次轻微惯性，避免「直来直去」 */
+body.dock-reveal .panel { animation: dock-reveal 0.28s var(--spring); }
+body.dock-tuck .panel { animation: dock-tuck 0.22s cubic-bezier(0.4, 0, 0.7, 1); }
+@keyframes dock-reveal {
+  from { transform: translateY(7px); opacity: 0.84; }
+  to { transform: none; opacity: 1; }
+}
+@keyframes dock-tuck {
+  from { transform: none; opacity: 1; }
+  to { transform: translateY(-5px); opacity: 0.9; }
+}
+
 /* ---------- 顶栏 ---------- */
 .topbar {
   display: flex;
