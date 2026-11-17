@@ -14,9 +14,16 @@ function subscribe(channel, callback) {
 }
 
 contextBridge.exposeInMainWorld('workboard', {
-  // 数据（REQ-006）
+  // 数据（REQ-006）：dataLoad 只返回当天 + 设置；明细按月分片存放
   dataLoad: () => ipcRenderer.invoke('data:load'),
-  dataSave: (payload) => ipcRenderer.invoke('data:save', payload),
+  dataSave: (payload) => ipcRenderer.invoke('day:save', payload),
+
+  // 回顾（日/周/月 + 关键字检索 + 导出）
+  monthLoad: (month) => ipcRenderer.invoke('month:load', month),
+  historyQuery: (query) => ipcRenderer.invoke('history:query', query),
+  historyExport: (query) => ipcRenderer.invoke('history:export', query),
+  openReview: () => ipcRenderer.invoke('review:open'),
+  onReviewChanged: (cb) => subscribe('review:onchange', cb),
 
   // 设置（透明度/主题/自启；panelPosition 由主进程维护）
   settingsGet: () => ipcRenderer.invoke('settings:get'),

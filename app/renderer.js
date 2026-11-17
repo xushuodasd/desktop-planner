@@ -13,12 +13,16 @@ const state = {
   dones: [],
   settings: { opacity: 0.5, theme: 'auto', autostart: false, panelPosition: null },
   view: 'plans', // plans | dones
+  timeText: '', // 时间滚轮当前值（如 '9:30'）
 };
 
 let saveTimer = null;
 let idCounter = 0;
 let toastTimer = null;
 let editingPlanId = null;
+let lastAddedId = null;
+let pendingDelete = null; // { kind, id }：等待二次确认的删除
+let pendingDeleteTimer = null;
 let switching = false;
 
 function todayKey() {
@@ -70,6 +74,132 @@ function showToast(text) {
   toastTimer = setTimeout(() => { toast.hidden = true; }, 6000);
 }
 
+/* ---------- 时间滚轮（时 / 分，滑动选择） ---------- */
+
+const TIME_ITEM_H = 34;
+const HOURS = Array.from({ length: 24 }, (_, i) => i);
+const MINUTES = Array.from({ length: 12 }, (_, i) => i * 5);
+
+let composerPicker = null;
+
+function padTime(n) {
+  return String(n).padStart(2, '0');
+}
+
+/** 默认选中：当前时间（5 分钟向上取整） */
+function currentTimeText() {
+  const d = new Date();
+  let h = d.getHours();
+  let m = Math.ceil(d.getMinutes() / 5) * 5;
+  if (m === 60) {
+    m = 0;
+    h = (h + 1) % 24;
+  }
+  return `${padTime(h)}:${padTime(m)}`;
+}
+
+function buildWheel(wheel, values) {
+  wheel.textContent = '';
+  const makePad = () => {
+    const node = document.createElement('div');
+    node.className = 'wheel-pad';
+    return node;
+  };
+  wheel.appendChild(makePad());
+  for (const v of values) {
+    const item = document.createElement('div');
+    item.className = 'wheel-item';
+    item.dataset.value = String(v);
+    item.textContent = padTime(v);
+    wheel.appendChild(item);
+  }
+  wheel.appendChild(makePad());
+}
+
+function wheelIndex(wheel) {
+  const count = wheel.querySelectorAll('.wheel-item').length;
+  const idx = Math.round(wheel.scrollTop / TIME_ITEM_H);
+  return Math.max(0, Math.min(count - 1, idx));
+}
+
+function markWheel(wheel) {
+  const idx = wheelIndex(wheel);
+  wheel.querySelectorAll('.wheel-item').forEach((node, i) => {
+    const d = Math.min(Math.abs(i - idx), 2);
+    node.dataset.d = String(d);
+    node.classList.toggle('is-active', d === 0);
+  });
+  return idx;
+}
+
+/** 在 host 内挂一套「小时 : 分钟」滚轮；返回控制器（可多处实例化：底部输入卡、行内编辑） */
+function createWheelPair(host, onChange) {
+  const hourWheel = document.createElement('div');
+  hourWheel.className = 'wheel';
+  hourWheel.setAttribute('aria-label', '小时');
+  const colon = document.createElement('span');
+  colon.className = 'wheel-colon';
+  colon.textContent = ':';
+  const minuteWheel = document.createElement('div');
+  minuteWheel.className = 'wheel';
+  minuteWheel.setAttribute('aria-label', '分钟');
+  buildWheel(hourWheel, HOURS);
+  buildWheel(minuteWheel, MINUTES);
+  host.append(hourWheel, colon, minuteWheel);
+
+  let raf = 0;
+  const read = () =>
+    `${padTime(HOURS[wheelIndex(hourWheel)])}:${padTime(MINUTES[wheelIndex(minuteWheel)])}`;
+  const sync = () => {
+    markWheel(hourWheel);
+    markWheel(minuteWheel);
+    const text = read();
+    if (onChange) onChange(text);
+    return text;
+  };
+  const onScroll = () => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      sync();
+    });
+  };
+  hourWheel.addEventListener('scroll', onScroll);
+  minuteWheel.addEventListener('scroll', onScroll);
+
+  return {
+    setValue(text) {
+      const [h, m] = String(text || '').split(':').map(Number);
+      hourWheel.scrollTop = Math.max(0, HOURS.indexOf(h)) * TIME_ITEM_H;
+      minuteWheel.scrollTop = Math.max(0, MINUTES.indexOf(m)) * TIME_ITEM_H;
+      return sync();
+    },
+    getValue: read,
+  };
+}
+
+function setTimePicker(open) {
+  const composer = el('composer');
+  if (!composer) return;
+  composer.classList.toggle('is-picking', open);
+  el('timeBtn').classList.toggle('is-open', open);
+  el('timeBtn').setAttribute('aria-expanded', String(open));
+  if (open && composerPicker) composerPicker.setValue(state.timeText);
+}
+
+function initTimePicker() {
+  state.timeText = currentTimeText();
+  el('timeBtn').textContent = state.timeText;
+  composerPicker = createWheelPair(el('pickHost'), (text) => {
+    state.timeText = text;
+    el('timeBtn').textContent = text;
+  });
+  el('timeBtn').addEventListener('click', () => {
+    setTimePicker(!el('composer').classList.contains('is-picking'));
+  });
+  el('timeBtn').setAttribute('aria-expanded', 'false');
+}
+
 function queueSave() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
@@ -103,13 +233,10 @@ function renderDateHeader() {
 }
 
 function updateComposerHint() {
-  const time = el('timeInput');
   const text = el('textInput');
   if (state.view === 'plans') {
-    time.placeholder = '时间段';
     text.placeholder = '待办事项，回车添加';
   } else {
-    time.placeholder = '时间段';
     text.placeholder = '补记已办，回车添加';
   }
 }
@@ -140,6 +267,70 @@ function makeIconButton(title, icon, className, onClick) {
   return btn;
 }
 
+/** 长文本：点击就地展开 / 收起（仅内容溢出时显示可点手型） */
+function makeTextExpandable(text, row) {
+  text.title = text.textContent;
+  requestAnimationFrame(() => {
+    if (text.scrollWidth <= text.clientWidth + 1) return;
+    text.classList.add('can-expand');
+    text.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const open = text.classList.toggle('is-expanded');
+      row.classList.toggle('is-expanded', open);
+    });
+  });
+}
+
+/** 危险操作二次确认：行内就地切换为「删除这条记录？取消 / 删除」，3.5s 未确认自动还原。
+ *  不使用系统 confirm / 模态框：不打断浏览，且误触成本为零。 */
+function askDelete(li, kind, id) {
+  if (pendingDelete) cancelDelete();
+  pendingDelete = { kind, id };
+  li.classList.add('is-confirming');
+  li.textContent = '';
+
+  const label = document.createElement('span');
+  label.className = 'confirm-text';
+  label.textContent = '删除这条记录？';
+
+  const actions = document.createElement('div');
+  actions.className = 'confirm-actions';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'text-btn';
+  cancelBtn.textContent = '取消';
+  cancelBtn.addEventListener('click', cancelDelete);
+
+  const okBtn = document.createElement('button');
+  okBtn.type = 'button';
+  okBtn.className = 'text-btn danger';
+  okBtn.textContent = '删除';
+  okBtn.addEventListener('click', () => {
+    if (!pendingDelete) return;
+    const { kind: k, id: targetId } = pendingDelete;
+    if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
+    pendingDelete = null;
+    pendingDeleteTimer = null;
+    if (k === 'plan') removePlan(targetId);
+    else removeDone(targetId);
+  });
+
+  actions.append(cancelBtn, okBtn);
+  li.append(label, actions);
+  pendingDeleteTimer = setTimeout(cancelDelete, 3500);
+}
+
+function cancelDelete() {
+  if (!pendingDelete) return;
+  const kind = pendingDelete.kind;
+  if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
+  pendingDelete = null;
+  pendingDeleteTimer = null;
+  if (kind === 'plan') renderPlans();
+  else renderDones();
+}
+
 function renderPlans() {
   const list = el('planList');
   list.textContent = '';
@@ -149,27 +340,45 @@ function renderPlans() {
 
   for (const plan of plans) {
     const li = document.createElement('li');
-    li.className = 'row' + (plan.id === editingPlanId ? ' editing' : '');
+    li.className = 'row' + (plan.id === editingPlanId ? ' editing' : '') +
+      (plan.id === lastAddedId ? ' is-new' : '');
 
     if (plan.id === editingPlanId) {
-      const box = document.createElement('div');
-      box.className = 'edit-box';
-      const timeInput = document.createElement('input');
-      timeInput.className = 'input input-time';
-      timeInput.value = plan.time;
-      timeInput.maxLength = 40;
-      timeInput.placeholder = '时间段';
-      const textInput = document.createElement('input');
-      textInput.className = 'input input-text';
-      textInput.value = plan.text;
-      textInput.maxLength = 200;
-      textInput.placeholder = '事项';
-      box.append(timeInput, textInput);
+      li.classList.add('is-editing');
+
+      const card = document.createElement('div');
+      card.className = 'edit-card';
+
+      let editTime = plan.time || currentTimeText();
+      const timeBtn = document.createElement('button');
+      timeBtn.type = 'button';
+      timeBtn.className = 'edit-time';
+      timeBtn.title = '选择时间';
+      timeBtn.textContent = editTime;
+
+      const head = document.createElement('div');
+      head.className = 'edit-head';
+      head.append(timeBtn);
+
+      const picker = document.createElement('div');
+      picker.className = 'edit-picker';
+      const wheelHost = document.createElement('div');
+      wheelHost.className = 'wheel-wrap';
+      picker.appendChild(wheelHost);
+
+      const textArea = document.createElement('textarea');
+      textArea.className = 'edit-text';
+      textArea.value = plan.text;
+      textArea.maxLength = 200;
+      textArea.rows = 1;
+      textArea.placeholder = '事项';
+
       const actions = document.createElement('div');
-      actions.className = 'row-actions';
+      actions.className = 'edit-actions';
+
       const commit = () => {
-        plan.time = timeInput.value.trim();
-        plan.text = textInput.value.trim() || plan.text;
+        plan.time = editTime;
+        plan.text = textArea.value.trim() || plan.text;
         editingPlanId = null;
         renderPlans();
         queueSave();
@@ -178,25 +387,68 @@ function renderPlans() {
         editingPlanId = null;
         renderPlans();
       };
-      actions.append(
-        makeIconButton('保存', 'check', 'ok', commit),
-        makeIconButton('取消', 'close', 'danger', cancel),
-      );
-      li.append(box, actions);
-      timeInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') textInput.focus(); });
-      textInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') commit(); });
-      setTimeout(() => textInput.focus(), 0);
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'text-btn';
+      cancelBtn.textContent = '取消';
+      cancelBtn.addEventListener('click', cancel);
+
+      const saveBtn = document.createElement('button');
+      saveBtn.type = 'button';
+      saveBtn.className = 'text-btn primary';
+      saveBtn.textContent = '保存';
+      saveBtn.addEventListener('click', commit);
+
+      actions.append(cancelBtn, saveBtn);
+      card.append(head, picker, textArea, actions);
+      li.append(card);
+
+      const pickerCtl = createWheelPair(wheelHost, (v) => {
+        editTime = v;
+        timeBtn.textContent = v;
+      });
+      timeBtn.addEventListener('click', () => {
+        const open = !card.classList.contains('is-picking');
+        card.classList.toggle('is-picking', open);
+        timeBtn.classList.toggle('is-open', open);
+        if (open) pickerCtl.setValue(editTime);
+      });
+
+      const grow = () => {
+        textArea.style.height = 'auto';
+        textArea.style.height = Math.min(textArea.scrollHeight, 116) + 'px';
+      };
+      textArea.addEventListener('input', grow);
+      textArea.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' && !ev.shiftKey) {
+          ev.preventDefault();
+          commit();
+        } else if (ev.key === 'Escape') {
+          ev.preventDefault();
+          ev.stopPropagation();
+          cancel();
+        }
+      });
+      setTimeout(() => {
+        textArea.focus();
+        textArea.setSelectionRange(textArea.value.length, textArea.value.length);
+        grow();
+      }, 0);
     } else {
       const check = document.createElement('input');
       check.type = 'checkbox';
       check.className = 'check';
       check.title = '标记完成';
-      check.addEventListener('change', () => completePlan(plan.id));
+      check.addEventListener('change', () => {
+        li.classList.add('is-completing');
+        setTimeout(() => completePlan(plan.id), 200);
+      });
 
       const time = document.createElement('span');
       time.className = 'time' + (plan.time ? '' : ' blank');
       time.textContent = plan.time || '—';
-      time.title = plan.time || '未填时间段';
+      time.title = plan.time || '未选时间';
 
       const text = document.createElement('span');
       text.className = 'text';
@@ -206,9 +458,10 @@ function renderPlans() {
       actions.className = 'row-actions';
       actions.append(
         makeIconButton('编辑', 'edit', '', () => { editingPlanId = plan.id; renderPlans(); }),
-        makeIconButton('删除', 'trash', 'danger', () => removePlan(plan.id)),
+        makeIconButton('删除', 'trash', 'danger', () => askDelete(li, 'plan', plan.id)),
       );
       li.append(check, time, text, actions);
+      makeTextExpandable(text, li);
     }
     list.appendChild(li);
   }
@@ -223,7 +476,7 @@ function renderDones() {
 
   for (const done of dones) {
     const li = document.createElement('li');
-    li.className = 'row';
+    li.className = 'row' + (done.id === lastAddedId ? ' is-new' : '');
 
     const time = document.createElement('span');
     time.className = 'time' + (done.time ? '' : ' blank');
@@ -242,9 +495,10 @@ function renderDones() {
     actions.className = 'row-actions';
     actions.append(
       makeIconButton('撤销回待办', 'undo', '', () => undoDone(done.id)),
-      makeIconButton('删除', 'trash', 'danger', () => removeDone(done.id)),
+      makeIconButton('删除', 'trash', 'danger', () => askDelete(li, 'done', done.id)),
     );
     li.append(time, text, meta, actions);
+    makeTextExpandable(text, li);
     list.appendChild(li);
   }
 }
@@ -352,17 +606,18 @@ function undoDone(id) {
   queueSave();
 }
 
-function addPlan(time, text) {
+function addPlan(time, text, id) {
   if (!text) return;
-  state.plans.push({ id: uid('p'), time, text, createdAt: localIsoNow() });
+  state.plans.push({ id: id || uid('p'), time, text, createdAt: localIsoNow() });
   renderPlans();
   queueSave();
+  setTimeout(() => { lastAddedId = null; }, 400);
 }
 
-function addManualDone(time, text) {
+function addManualDone(time, text, id) {
   if (!text) return;
   state.dones.push({
-    id: uid('d'),
+    id: id || uid('d'),
     time,
     text,
     source: 'manual',
@@ -370,6 +625,7 @@ function addManualDone(time, text) {
   });
   renderDones();
   queueSave();
+  setTimeout(() => { lastAddedId = null; }, 400);
 }
 
 function resolvedTheme() {
@@ -396,11 +652,10 @@ async function refreshOnShow() {
   editingPlanId = null;
   try {
     const r = await api.dataLoad();
-    const boardData = (r && r.board) || {};
-    const day = boardData.days && boardData.days[state.dateKey];
-    state.plans = (day && Array.isArray(day.plans)) ? day.plans : [];
-    state.dones = (day && Array.isArray(day.dones)) ? day.dones : [];
-    if (boardData.settings) state.settings = boardData.settings;
+    const day = (r && r.day) || {};
+    state.plans = Array.isArray(day.plans) ? day.plans : [];
+    state.dones = Array.isArray(day.dones) ? day.dones : [];
+    if (r && r.settings) state.settings = r.settings;
   } catch (err) {
     showToast('数据加载失败：' + err);
   }
@@ -409,9 +664,24 @@ async function refreshOnShow() {
 }
 
 function bindEvents() {
+  initTimePicker();
+
   document.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Escape') return;
-    if (editingPlanId) {
+    if (pendingDelete) {
+      cancelDelete();
+      return;
+    }
+    const pickingCard = document.querySelector('.edit-card.is-picking');
+    if (pickingCard) {
+      pickingCard.classList.remove('is-picking');
+      const btn = pickingCard.querySelector('.edit-time');
+      if (btn) btn.classList.remove('is-open');
+      return;
+    }
+    if (el('composer').classList.contains('is-picking')) {
+      setTimePicker(false);
+    } else if (editingPlanId) {
       editingPlanId = null;
       renderPlans();
     } else {
@@ -419,21 +689,38 @@ function bindEvents() {
     }
   });
 
+  document.addEventListener('pointerdown', (ev) => {
+    if (pendingDelete) {
+      const row = document.querySelector('.row.is-confirming');
+      if (!row || !row.contains(ev.target)) cancelDelete();
+    }
+    if (el('composer').classList.contains('is-picking') && !el('composer').contains(ev.target)) {
+      setTimePicker(false);
+    }
+    document.querySelectorAll('.edit-card.is-picking').forEach((card) => {
+      if (card.contains(ev.target)) return;
+      card.classList.remove('is-picking');
+      const btn = card.querySelector('.edit-time');
+      if (btn) btn.classList.remove('is-open');
+    });
+  });
+
   const submitComposer = () => {
-    const time = el('timeInput').value.trim();
     const text = el('textInput').value.trim();
     if (!text) return;
-    if (state.view === 'plans') addPlan(time, text);
-    else addManualDone(time, text);
-    el('timeInput').value = '';
+    const time = state.timeText || currentTimeText();
+    lastAddedId = uid('p');
+    if (state.view === 'plans') addPlan(time, text, lastAddedId);
+    else {
+      lastAddedId = uid('d');
+      addManualDone(time, text, lastAddedId);
+    }
+    setTimePicker(false);
     el('textInput').value = '';
     el('textInput').focus();
   };
   el('textInput').addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') submitComposer();
-  });
-  el('timeInput').addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') el('textInput').focus();
   });
 
   el('tabPlans').addEventListener('click', () => setView('plans'));
@@ -444,16 +731,18 @@ function bindEvents() {
 
 
   api.onDataChanged((payload) => {
-    if (payload && payload.board) {
-      const day = payload.board.days[state.dateKey];
-      state.plans = (day && Array.isArray(day.plans)) ? day.plans : [];
-      state.dones = (day && Array.isArray(day.dones)) ? day.dones : [];
-      if (payload.board.settings) state.settings = payload.board.settings;
-      editingPlanId = null;
+    if (!payload) return;
+    if (payload.settings) {
+      state.settings = payload.settings;
       applySettings();
+    }
+    if (payload.day && payload.dateKey === state.dateKey) {
+      state.plans = Array.isArray(payload.day.plans) ? payload.day.plans : [];
+      state.dones = Array.isArray(payload.day.dones) ? payload.day.dones : [];
+      editingPlanId = null;
       renderAll();
     }
-    if (payload && payload.notice) showToast(payload.notice);
+    if (payload.notice) showToast(payload.notice);
   });
 
   api.onPanelChanged((payload) => {
@@ -472,11 +761,10 @@ async function init() {
   state.dateKey = todayKey();
   try {
     const r = await api.dataLoad();
-    const boardData = (r && r.board) || {};
-    const day = boardData.days && boardData.days[state.dateKey];
-    state.plans = (day && Array.isArray(day.plans)) ? day.plans : [];
-    state.dones = (day && Array.isArray(day.dones)) ? day.dones : [];
-    if (boardData.settings) state.settings = boardData.settings;
+    const day = (r && r.day) || {};
+    state.plans = Array.isArray(day.plans) ? day.plans : [];
+    state.dones = Array.isArray(day.dones) ? day.dones : [];
+    if (r && r.settings) state.settings = r.settings;
   } catch (err) {
     showToast('数据加载失败：' + err);
   }

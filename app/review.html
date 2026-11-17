@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- CSP：仅允许自身资源，禁止任何远程内容与内联脚本（REQ-008 / design §4） -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'" />
+  <title>回顾 - 悬浮工作台</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="review-body">
+  <main class="review-page">
+    <header class="review-bar">
+      <div class="review-nav">
+        <button type="button" class="rv-btn" id="prevBtn" title="上一段">‹</button>
+        <button type="button" class="rv-btn" id="nextBtn" title="下一段">›</button>
+        <button type="button" class="rv-btn" id="todayBtn" title="回到今天">今天</button>
+      </div>
+
+      <div class="rv-tabs" role="tablist" aria-label="回顾范围">
+        <button type="button" class="rv-tab is-active rv-mode" id="modeDay" data-mode="day" role="tab" aria-selected="true">日</button>
+        <button type="button" class="rv-tab rv-mode" id="modeWeek" data-mode="week" role="tab" aria-selected="false">周</button>
+        <button type="button" class="rv-tab rv-mode" id="modeMonth" data-mode="month" role="tab" aria-selected="false">月</button>
+      </div>
+
+      <div class="review-actions">
+        <input type="search" id="searchInput" class="input rv-search" placeholder="搜索记录…" maxlength="40" />
+        <select id="formatSelect" class="select" title="导出格式">
+          <option value="md">Markdown</option>
+          <option value="csv">CSV</option>
+        </select>
+        <button type="button" class="rv-btn rv-export" id="exportBtn">导出</button>
+      </div>
+    </header>
+
+    <div class="review-heading">
+      <h1 class="review-title" id="rangeTitle">—</h1>
+      <div class="review-summary" id="rangeSummary"></div>
+    </div>
+
+    <div class="review-scroll" id="reviewScroll">
+      <div class="rv-empty" id="emptyState" hidden>这段时间还没有记录</div>
+      <div class="rv-days" id="dayList"></div>
+    </div>
+  </main>
+
+  <div class="rv-toast" id="toast" hidden></div>
+
+  <script src="review.js"></script>
+</body>
+</html>

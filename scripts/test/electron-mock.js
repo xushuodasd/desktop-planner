@@ -87,6 +87,7 @@ const screen = {
 const app = {
   _login: null,
   setPath() {},
+  getPath() { return require('os').tmpdir(); },
   requestSingleInstanceLock() { return true; },
   whenReady() { return Promise.resolve(); },
   on() {},
@@ -94,6 +95,17 @@ const app = {
   setLoginItemSettings(opts) { app._login = { ...opts, openAtLogin: !!(opts && opts.openAtLogin) }; },
   getLoginItemSettings() { return { openAtLogin: !!(app._login && app._login.openAtLogin) }; },
   quit() { app._quit = true; },
+};
+
+/** 导出用：直接把「另存为」结果指向临时目录下的固定文件 */
+const dialog = {
+  _lastPath: null,
+  async showSaveDialog(a, b) {
+    const opts = b || a || {};
+    const ext = (opts.defaultPath || '').split('.').pop() || 'md';
+    dialog._lastPath = require('path').join(require('os').tmpdir(), `workboard-export-test.${ext}`);
+    return { canceled: false, filePath: dialog._lastPath };
+  },
 };
 
 const Menu = { buildFromTemplate: (template) => ({ template }) };
@@ -110,6 +122,7 @@ module.exports = {
   ipcMain,
   screen,
   nativeImage,
+  dialog,
   __ipcHandlers: ipcHandlers,
   __ipcListeners: ipcOnHandlers,
   __webContentsSendLog: webContentsSendLog,

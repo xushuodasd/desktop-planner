@@ -45,10 +45,15 @@
 
     <footer class="dock">
       <div class="composer" id="composer">
-        <input type="text" id="timeInput" class="input input-time" placeholder="时间段" maxlength="40" />
-        <input type="text" id="textInput" class="input input-text" placeholder="事项，回车添加" maxlength="200" />
-      </div>
+        <div class="time-picker" id="timePicker">
+          <div class="wheel-wrap" id="pickHost"></div>
+        </div>
 
+        <div class="composer-row">
+          <button type="button" id="timeBtn" class="time-btn" title="选择时间">0:00</button>
+          <input type="text" id="textInput" class="input input-text" placeholder="写点什么，回车添加" maxlength="200" />
+        </div>
+      </div>
     </footer>
   </div>
 

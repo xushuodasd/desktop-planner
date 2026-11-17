@@ -16,7 +16,7 @@
 
  */
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, dialog } = require('electron');
 
 const fs = require('fs');
 
@@ -85,6 +85,9 @@ const DATA_DIR = IS_PACKAGED
 const DATA_FILE = path.join(DATA_DIR, 'workboard.json');
 
 const BAK_FILE = DATA_FILE + '.bak';
+/** 按月分片目录：months/YYYY-MM.json（每天一条明细，明细永久保留） */
+const MONTHS_DIR = path.join(DATA_DIR, 'months');
+const SCHEMA_VERSION = 2;
 
 const BOOT_LOG = path.join(DATA_DIR, 'boot.log');
 
@@ -163,6 +166,7 @@ app.setPath('userData', CHROMIUM_DATA_DIR);
 
 let panel = null;
 let settingsWin = null; // 独立设置窗口（托盘右键「设置…」打开）
+let reviewWin = null; // 独立回顾窗口（托盘右键「回顾…」打开）
 
 let tray = null;
 
@@ -186,6 +190,7 @@ let dockHideTimer = null;
 let dockSlideTimer = null;
 
 let watcher = null;
+let monthWatcher = null; // months/ 目录监听（外部改月份分片时刷新面板/回顾窗口）
 
 let watcherRetries = 0;
 
@@ -221,7 +226,7 @@ function defaultBoard(panelPos) {
 
   return {
 
-    schemaVersion: 1,
+    schemaVersion: SCHEMA_VERSION,
 
     app: 'desktop-planner',
 
@@ -285,7 +290,7 @@ function sanitizeBoard(raw, fallbackPanelPos) {
 
   if (!isObj(raw)) return b;
 
-  b.schemaVersion = Number.isInteger(raw.schemaVersion) ? raw.schemaVersion : 1;
+  b.schemaVersion = SCHEMA_VERSION;
 
   if (isStr(raw.app)) b.app = raw.app.slice(0, 64);
 
@@ -442,7 +447,7 @@ function sanitizeDones(list, usedIds) {
 
 
 
-/** 启动时确保 data/workboard.json 存在（含 schemaVersion:1、空 days） */
+/** 启动时确保 data/workboard.json 存在（v2：只存设置，days 分片到 months/） */
 
 function ensureDataFile() {
 
@@ -464,7 +469,12 @@ function writeBoard(next) {
 
   board = next;
 
-  const text = JSON.stringify(board, null, 2) + '\n';
+  // 根文件只保留设置；每日明细在 months/YYYY-MM.json
+  const text = JSON.stringify({
+    schemaVersion: SCHEMA_VERSION,
+    app: board.app,
+    settings: board.settings,
+  }, null, 2) + '\n';
 
   try {
 
@@ -590,15 +600,37 @@ function loadBoardFromDisk() {
 
     writeBoard(defaultBoard(defaultPanelPosition()));
 
-    broadcastData({ board, notice: '数据文件损坏，已备份为 workboard.json.bak 并重建' });
+    broadcastData({
+      settings: board.settings,
+      dateKey: todayKeyMain(),
+      day: readDay(todayKeyMain()),
+      notice: '数据文件损坏，已备份为 workboard.json.bak 并重建',
+    });
 
     return;
 
   }
 
+  // v1 兼容：旧单文件里的 days 按月份拆分到 months/，成功后根文件只保留设置
+  const legacyDays = isObj(parsed) && isObj(parsed.days) ? parsed.days : null;
+
+  const legacyCount = legacyDays ? Object.keys(legacyDays).length : 0;
+
   board = sanitizeBoard(parsed, null);
 
-  broadcastData({ board });
+  board.days = {}; // 真实明细已下沉到月分片，内存不再持有
+
+  if (legacyCount > 0) {
+
+    migrateLegacyDays(legacyDays);
+
+    writeBoard(board); // 重写根文件，清掉 days
+
+    bootLog(`migrated v1 days=${legacyCount}`);
+
+  }
+
+  broadcastData({ settings: board.settings, dateKey: todayKeyMain(), day: readDay(todayKeyMain()) });
 
 }
 
@@ -700,6 +732,9 @@ function broadcastSettings() {
   if (settingsWin && !settingsWin.isDestroyed()) {
     settingsWin.webContents.send('settings:onchange', payload);
 
+  }
+  if (reviewWin && !reviewWin.isDestroyed()) {
+    reviewWin.webContents.send('settings:onchange', payload);
   }
 
 }
@@ -1281,6 +1316,10 @@ function rebuildTrayMenu() {
     },
 
     {
+      label: '回顾…',
+      click: () => openReviewWindow(),
+    },
+    {
       label: '设置…',
       click: () => openSettingsWindow(),
     },
@@ -1506,25 +1545,297 @@ function createElectronTrayFallback(iconPath) {
 
 
 
-/* ---------------------------------- IPC 白名单 ---------------------------------- */
+/* -------------------------- 数据 v2：按月分片（months/YYYY-MM.json） -------------------------- */
 
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MONTH_RE = /^\d{4}-\d{2}$/;
 
+/** 'YYYY-MM' -> { month, days: { 'YYYY-MM-DD': {plans, dones} } }，按需加载 */
+const monthCache = new Map();
 
-function validDateKey(key) {
+/** 'YYYY-MM' -> 最近一次自身写入的文本（月文件回环守卫） */
+const monthOwnWrite = new Map();
 
-  return isStr(key) && /^\d{4}-\d{2}-\d{2}$/.test(key);
-
+function todayKeyMain(d) {
+  const t = d || new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`;
 }
 
+function validDateKey(key) {
+  return isStr(key) && DAY_RE.test(key);
+}
 
+function validMonth(m) {
+  if (!isStr(m) || !MONTH_RE.test(m)) return false;
+  const mm = Number(m.slice(5, 7));
+  return mm >= 1 && mm <= 12;
+}
+
+function monthOf(dateKey) {
+  return isStr(dateKey) ? dateKey.slice(0, 7) : '';
+}
+
+function monthFilePath(m) {
+  return path.join(MONTHS_DIR, m + '.json');
+}
+
+function ensureMonthsDir() {
+  if (!fs.existsSync(MONTHS_DIR)) fs.mkdirSync(MONTHS_DIR, { recursive: true });
+}
+
+/** 单日校验（plans/dones 共用 id 去重） */
+function sanitizeDay(raw) {
+  const usedIds = new Set();
+  if (!isObj(raw)) return { plans: [], dones: [] };
+  return {
+    plans: sanitizePlans(raw.plans, usedIds),
+    dones: sanitizeDones(raw.dones, usedIds),
+  };
+}
+
+/** 读一个月分片：不存在返回空月；损坏则备份 .bak 后按空月重建 */
+function loadMonth(m) {
+  if (monthCache.has(m)) return monthCache.get(m);
+  const data = { month: m, days: {} };
+  monthCache.set(m, data);
+  ensureMonthsDir();
+  let text = null;
+  try {
+    text = fs.readFileSync(monthFilePath(m), 'utf8');
+  } catch (err) {
+    if (err && err.code !== 'ENOENT') console.error('[workboard] 月分片读取失败：', err);
+    return data;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (isObj(parsed) && isObj(parsed.days)) {
+      for (const key of Object.keys(parsed.days)) {
+        if (!validDateKey(key) || monthOf(key) !== m) continue;
+        data.days[key] = sanitizeDay(parsed.days[key]);
+      }
+    }
+  } catch (err) {
+    console.error('[workboard] 月分片损坏，备份后重建：', err);
+    try { fs.renameSync(monthFilePath(m), monthFilePath(m) + '.bak'); } catch (e) { /* ignore */ }
+  }
+  return data;
+}
+
+/** 原子写一个月分片 */
+function writeMonth(m) {
+  const data = monthCache.get(m);
+  if (!data) return;
+  ensureMonthsDir();
+  const file = monthFilePath(m);
+  const text = JSON.stringify(data, null, 2) + '\n';
+  try {
+    fs.writeFileSync(file + '.tmp', text, 'utf8');
+    fs.renameSync(file + '.tmp', file);
+  } catch (err) {
+    console.error('[workboard] 月分片原子写失败，降级直写：', err);
+    try {
+      fs.writeFileSync(file, text, 'utf8');
+    } catch (err2) {
+      console.error('[workboard] 月分片直写失败：', err2);
+      return;
+    }
+  }
+  monthOwnWrite.set(m, text);
+}
+
+/** 读某天（面板只加载当天） */
+function readDay(dateKey) {
+  if (!validDateKey(dateKey)) return { plans: [], dones: [] };
+  const day = loadMonth(monthOf(dateKey)).days[dateKey];
+  return day ? { plans: day.plans.slice(), dones: day.dones.slice() } : { plans: [], dones: [] };
+}
+
+/** 写某天：只落盘所在月份分片 */
+function writeDay(dateKey, rawDay) {
+  const m = monthOf(dateKey);
+  const data = loadMonth(m);
+  data.days[dateKey] = sanitizeDay(rawDay);
+  writeMonth(m);
+  return data.days[dateKey];
+}
+
+/** v1 → v2：把旧单文件的天按月份拆分（已有月分片中的同一天优先保留，不覆盖） */
+function migrateLegacyDays(days) {
+  const grouped = new Map();
+  for (const key of Object.keys(days)) {
+    if (!validDateKey(key)) continue;
+    const m = monthOf(key);
+    if (!grouped.has(m)) grouped.set(m, []);
+    grouped.get(m).push(key);
+  }
+  for (const [m, keys] of grouped) {
+    const data = loadMonth(m);
+    let changed = false;
+    for (const key of keys) {
+      if (data.days[key]) continue;
+      data.days[key] = sanitizeDay(days[key]);
+      changed = true;
+    }
+    if (changed) writeMonth(m);
+  }
+}
+
+/** 覆盖 from..to 的月份键（含首尾） */
+function monthKeysBetween(from, to) {
+  const out = [];
+  if (!validDateKey(from) || !validDateKey(to)) return out;
+  let y = Number(from.slice(0, 4));
+  let mo = Number(from.slice(5, 7));
+  const end = Number(to.slice(0, 4)) * 12 + Number(to.slice(5, 7));
+  while (y * 12 + mo <= end) {
+    out.push(`${y}-${String(mo).padStart(2, '0')}`);
+    mo += 1;
+    if (mo > 12) { mo = 1; y += 1; }
+  }
+  return out;
+}
+
+/** 历史查询：按范围 + 关键字（空关键字返回全部有记录的天） */
+function queryHistory(from, to, keyword) {
+  const kw = isStr(keyword) ? keyword.trim().toLowerCase() : '';
+  const out = [];
+  for (const m of monthKeysBetween(from, to)) {
+    const data = loadMonth(m);
+    for (const key of Object.keys(data.days).sort()) {
+      if (key < from || key > to) continue;
+      const day = data.days[key];
+      const plans = kw ? day.plans.filter((p) => p.text.toLowerCase().includes(kw)) : day.plans;
+      const dones = kw ? day.dones.filter((d) => d.text.toLowerCase().includes(kw)) : day.dones;
+      if (kw && plans.length === 0 && dones.length === 0) continue;
+      out.push({ dateKey: key, plans, dones });
+    }
+  }
+  return out;
+}
+
+function exportTimeValue(t) {
+  const m = isStr(t) ? t.match(/(\d{1,2})\s*[:：]\s*(\d{1,2})/) : null;
+  return m ? Number(m[1]) * 60 + Number(m[2]) : 9999;
+}
+
+/** 导出文本：Markdown（按天分组）或 CSV（UTF-8 BOM，Excel 直接打开） */
+function buildExportText(days, format) {
+  if (format === 'csv') {
+    const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const lines = ['日期,类型,时间段,内容'];
+    for (const d of days) {
+      for (const p of d.plans) lines.push([d.dateKey, '待办', p.time, p.text].map(esc).join(','));
+      for (const x of d.dones) lines.push([d.dateKey, '已办', x.time, x.text].map(esc).join(','));
+    }
+    return '\ufeff' + lines.join('\r\n') + '\r\n';
+  }
+  const out = [];
+  for (const d of days) {
+    const rows = [
+      ...d.plans.map((p) => ({ time: p.time, text: p.text, type: '待办' })),
+      ...d.dones.map((x) => ({ time: x.time, text: x.text, type: '已办' })),
+    ].map((r, i) => ({ ...r, i }))
+      .sort((a, b) => exportTimeValue(a.time) - exportTimeValue(b.time) || a.i - b.i);
+    out.push(`## ${d.dateKey}`);
+    if (rows.length === 0) out.push('（无记录）');
+    for (const r of rows) out.push(`- ${r.time ? r.time + '　' : ''}[${r.type}] ${r.text}`);
+    out.push('');
+  }
+  return out.join('\n');
+}
+
+function broadcastReview(month) {
+  if (reviewWin && !reviewWin.isDestroyed()) {
+    reviewWin.webContents.send('review:onchange', { month });
+  }
+}
+
+/** 月分片被外部修改：清缓存 → 面板（当天）与回顾窗口重读 */
+function scheduleMonthReload(m) {
+  setTimeout(() => {
+    let text = null;
+    try {
+      text = fs.readFileSync(monthFilePath(m), 'utf8');
+    } catch (err) {
+      return;
+    }
+    if (monthOwnWrite.get(m) === text) return; // 自身写入，忽略
+    monthCache.delete(m);
+    const tk = todayKeyMain();
+    if (monthOf(tk) === m) {
+      broadcastData({ dateKey: tk, day: readDay(tk) });
+    }
+    broadcastReview(m);
+  }, RELOAD_DEBOUNCE_MS);
+}
+
+function startMonthWatcher() {
+  if (monthWatcher) {
+    try { monthWatcher.close(); } catch (e) { /* ignore */ }
+    monthWatcher = null;
+  }
+  ensureMonthsDir();
+  try {
+    monthWatcher = fs.watch(MONTHS_DIR, { persistent: true }, (evt, fname) => {
+      if (!fname || !/^\d{4}-\d{2}\.json$/.test(fname)) return;
+      scheduleMonthReload(fname.slice(0, 7));
+    });
+    monthWatcher.on('error', () => {
+      try { monthWatcher.close(); } catch (e) { /* ignore */ }
+      monthWatcher = null;
+    });
+  } catch (err) {
+    console.error('[workboard] 月分片监听启动失败：', err);
+  }
+}
+
+/** 独立回顾窗口（托盘右键「回顾…」）：日/周/月切换 + 搜索 + 导出 */
+function openReviewWindow() {
+  if (reviewWin && !reviewWin.isDestroyed()) {
+    reviewWin.show();
+    reviewWin.focus();
+    return;
+  }
+  reviewWin = new BrowserWindow({
+    width: 940,
+    height: 700,
+    minWidth: 720,
+    minHeight: 520,
+    title: '回顾 - 悬浮工作台',
+    icon: windowIcon(),
+    show: false,
+    resizable: true,
+    maximizable: true,
+    autoHideMenuBar: true,
+    backgroundMaterial: 'acrylic',
+    webPreferences: commonWebPreferences(),
+  });
+  reviewWin.setMenuBarVisibility(false);
+  reviewWin.loadFile(path.join(APP_DIR, 'review.html'));
+  reviewWin.once('ready-to-show', () => {
+    if (!reviewWin || reviewWin.isDestroyed()) return;
+    try { reviewWin.setBackgroundMaterial('acrylic'); } catch (err) { /* Win10 无此材质 */ }
+    reviewWin.show();
+    reviewWin.focus();
+  });
+  reviewWin.on('closed', () => {
+    reviewWin = null;
+  });
+}
+
+/* ---------------------------------- IPC 白名单 ---------------------------------- */
 
 function registerIpc() {
 
-  ipcMain.handle('data:load', () => ({ board }));
+  ipcMain.handle('data:load', () => {
+    const tk = todayKeyMain();
+    return { settings: board.settings, dateKey: tk, day: readDay(tk) };
+  });
 
 
 
-  ipcMain.handle('data:save', (event, payload) => {
+  ipcMain.handle('day:save', (event, payload) => {
 
     try {
 
@@ -1534,23 +1845,15 @@ function registerIpc() {
 
       }
 
-      const usedIds = new Set();
+      writeDay(payload.dateKey, { plans: payload.plans, dones: payload.dones });
 
-      board.days[payload.dateKey] = {
-
-        plans: sanitizePlans(payload.plans, usedIds),
-
-        dones: sanitizeDones(payload.dones, usedIds),
-
-      };
-
-      writeBoard(board);
+      broadcastReview(monthOf(payload.dateKey));
 
       return { ok: true };
 
     } catch (err) {
 
-      console.error('[workboard] data:save 失败：', err);
+      console.error('[workboard] day:save 失败：', err);
 
       return { ok: false, error: String(err) };
 
@@ -1611,6 +1914,51 @@ function registerIpc() {
   });
 
 
+
+  ipcMain.handle('month:load', (event, month) => {
+    if (!validMonth(month)) return { ok: false, error: 'invalid month' };
+    return { ok: true, month, days: loadMonth(month).days };
+  });
+
+  ipcMain.handle('history:query', (event, query) => {
+    const q = isObj(query) ? query : {};
+    if (!validDateKey(q.from) || !validDateKey(q.to) || q.from > q.to) {
+      return { ok: false, error: 'invalid range' };
+    }
+    return { ok: true, days: queryHistory(q.from, q.to, q.keyword) };
+  });
+
+  ipcMain.handle('history:export', async (event, query) => {
+    try {
+      const q = isObj(query) ? query : {};
+      if (!validDateKey(q.from) || !validDateKey(q.to) || q.from > q.to) {
+        return { ok: false, error: 'invalid range' };
+      }
+      const format = q.format === 'csv' ? 'csv' : 'md';
+      const days = queryHistory(q.from, q.to, q.keyword);
+      const text = buildExportText(days, format);
+      const owner = event && event.sender ? BrowserWindow.fromWebContents(event.sender) : null;
+      const opts = {
+        title: '导出工作记录',
+        defaultPath: path.join(app.getPath('documents'), `悬浮工作台-${q.from}_${q.to}.${format}`),
+        filters: format === 'csv'
+          ? [{ name: 'CSV', extensions: ['csv'] }]
+          : [{ name: 'Markdown', extensions: ['md'] }],
+      };
+      const r = owner ? await dialog.showSaveDialog(owner, opts) : await dialog.showSaveDialog(opts);
+      if (!r || r.canceled || !r.filePath) return { ok: true, canceled: true };
+      fs.writeFileSync(r.filePath, text, 'utf8');
+      return { ok: true, path: r.filePath, dayCount: days.length };
+    } catch (err) {
+      console.error('[workboard] history:export 失败：', err);
+      return { ok: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('review:open', () => {
+    openReviewWindow();
+    return { ok: true };
+  });
 
   ipcMain.handle('panel:toggle', () => {
 
@@ -1680,9 +2028,13 @@ if (!gotLock) {
 
     ensureDataFile();
 
-    loadBoardFromDisk(); // 首次载入并校验
+    ensureMonthsDir();
+
+    loadBoardFromDisk(); // 首次载入并校验（v1 数据自动迁移到 months/）
 
     startWatcher();
+
+    startMonthWatcher();
 
     registerIpc();
 

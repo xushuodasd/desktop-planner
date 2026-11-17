@@ -37,6 +37,8 @@ If Not fso.FileExists(exePath) Then
     WScript.Quit 1
 End If
 
+' Self-heal: Low integrity label makes Chromium quit before main.js (ProcessSingleton Error 5)
+shell.Run "icacls """ & exePath & """ /setintegritylevel M", 0, True
 Log "run " & exePath & " " & appDir
 shell.CurrentDirectory = rootDir
 ' 1 = normal window (0=hidden can make Electron look like "nothing happened")

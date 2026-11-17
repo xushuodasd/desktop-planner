@@ -18,8 +18,12 @@
 - 贴顶自动隐藏（QQ 式）：拖到离工作区顶端 `DOCK_SNAP=26` 内吸顶并向上收起，只在顶端留 `DOCK_STRIP=6` 细边；鼠标移到细边滑出完整面板，离开 450ms 后重新收起；往下拖超过 `UNDOCK_DIST=46` 解除吸顶。
 - 显隐：托盘图标左键切换；面板内 Esc 收起；托盘右键菜单「打开/收起面板、开机自启、设置…、退出」。
 - 透明度：独立设置窗口中调节，默认 **50%**、范围 **20%–100%**（主进程 clamp 0.2–1）；CSS `--glass: calc(0.16 + var(--panel-alpha) * 0.72)`。
-- 透明窗口：`transparent: true` + 透明 backgroundColor，透明度完全由 CSS 决定，**失去焦点也保持透明**；原因是 Windows 的 `backgroundMaterial: 'acrylic'` 在失焦时会退化为实色。代价是无窗口背后的磨砂模糊；圆角改为 CSS 20px 绘制，无 DWM 阴影。
+- 透明窗口：`transparent: true` + 透明 backgroundColor，透明度完全由 CSS 决定，**失去焦点也保持透明**；原因是 Windows 的 `backgroundMaterial: 'acrylic'` 在失焦时会退化为实色。代价是无窗口背后的磨砂模糊；圆角改为 CSS 绘制（v0.3 为 20px，v0.5 起为 24px），无 DWM 阴影。
 - 托盘：Win11 上 Electron.Tray 常不进入通知区，走 **wscript → STA PowerShell NotifyIcon** 兜底（`scripts/tray-host.ps1`）。
+- 时间输入（v0.5）：每条记录只有一个时间点，不再是起止时间段。底部时间文字默认取当前时刻并按 5 分钟向上取整；点击在输入卡内就地展开「小时 / 分钟」滚轮（分钟 0/5/…/55，`scroll-snap` 吸附），滚动即更新、滑动即生效；点时间文字、输入卡外部或按 Esc 收起；不再有自由文本时间输入。
+- 长文本（v0.5）：列表行单行省略；仅当正文实际溢出（`scrollWidth > clientWidth`）时正文可点，点击就地展开为多行、再次点击收回；展开期间复选框 / 时间 / 操作按钮顶部对齐；不弹窗、不跳转。
+- 行内编辑（v0.5）：点「编辑」后原行替换为一张编辑卡（不弹窗）——时间芯片（点击在卡内展开与底部同一套滚轮）、自动增高到 116px 的多行文本框（`Enter` 保存 / `Shift+Enter` 换行 / `Esc` 取消）、右下角「取消 / 保存」文字按钮；卡片高度变化有 260ms 阻尼过渡。
+- 视觉体系（v0.5，Obsidian Glass）：玻璃材质 = 渐变底 + 顶部 1px 内高光 + 1px 内描边 + 外投影四层叠加；圆角阶梯 面板 24 / 卡片 18 / 控件 13（内圆角 = 外圆角 − 内边距，保持同心）；全界面单一强调色（蓝）只用于选中态与时间；动效统一 `cubic-bezier(0.32,0.72,0,1)`，输入卡展开 300ms、行入场 340ms、勾选淡出 200ms。
 
 ## 3. 结构与数据
 
@@ -31,6 +35,7 @@
 | `app/preload.js` | contextIsolation 白名单桥 |
 | `app/renderer.js` + `index.html` + `style.css` | 计划/已办 UI |
 | `app/settings.html` + `settings.js` | 独立设置窗口（透明度 / 主题 / 开机自启） |
+| `app/review.html` + `review.js` | 独立回顾窗口（日/周/月、搜索、导出） |
 | `app/assets/` | icon / tray 图标（扁平蓝底白勾） |
 | 根 `package.json` | electron-builder：NSIS、桌面/开始菜单快捷方式、`extraResources` 打入托盘脚本 |
 | `scripts/setup-runtime.ps1` | 开发：解压 Electron → `runtime\`，生成 `DesktopPlanner.exe` |
@@ -41,9 +46,11 @@
 
 ### 3.2 数据路径
 
-- **打包后**（`app.isPackaged`）：工作数据在 `文档\悬浮工作台\workboard.json`；Chromium userData 固定为 `%APPDATA%\desktop-planner\appdata`（纯 ASCII，需预先创建）
-- **开发**：`项目\data\workboard.json` + `项目\data\appdata\`
+- **打包后**（`app.isPackaged`）：工作数据在 `文档\悬浮工作台\workboard.json`（只存设置）+ `文档\悬浮工作台\months\YYYY-MM.json`（每月明细）；Chromium userData 固定为 `%APPDATA%\desktop-planner\appdata`（纯 ASCII，需预先创建）
+- **开发**：`项目\data\workboard.json` + `项目\data\months\` + `项目\data\appdata\`
 - 模型：requirements.md §5；`settings` 含 opacity（默认 0.5，clamp 0.2–1）/ theme / autostart / panelPosition
+- 读写：`data:load` 只返回当天与设置；`day:save` 只写所在月份分片；`month:load` / `history:query` 供回顾窗口按需读取；`history:export` 走系统「另存为」导出 Markdown / CSV
+- 监听：`data\` 监听根文件（设置外部修改），`data\months\` 监听月分片（外部修改后清缓存并广播当天）
 
 ### 3.3 安全
 
@@ -69,6 +76,12 @@
 - ADR-006 未签名构建须在 afterPack 关闭 `EnableEmbeddedAsarIntegrityValidation`，否则可能进 JS 前秒退  
 - ADR-007 移除悬浮球，改为单面板 + 贴顶自动隐藏（v0.3）：`app/ball.html` / `ball.js` / `ball:*` IPC / `settings.ballPosition / ballDock` 已删除；位置改用 `settings.panelPosition`  
 - ADR-008 启动必须带 `--no-sandbox` + ASCII `--user-data-dir`（`%APPDATA%\desktop-planner\appdata`，预先创建）；安装包快捷方式固化该参数  
+- ADR-009 明细按月分片（v2）：上班族每天记录会无限累积，单文件会越写越大；改为根文件只存设置 + `months/YYYY-MM.json` 存明细，面板只加载当天，回顾窗口按范围读取命中月份；明细永久保留，v1 数据启动时自动迁移
+- ADR-010 时间用滚轮而非文本（v0.5）：手写「9:00-10:00」既慢又格式不统一，改为单时间点 + 小时/分钟滚轮（5 分钟刻度），默认当前时刻；代价是不再记录起止区间（日报场景只关心「几点做了什么」）
+- ADR-011 长文本行内展开，不弹窗（v0.5）：列表保持单行节奏，仅溢出项可点；展开/收起在行内完成，避免弹层打断浏览，也不额外增加「详情」按钮
+- ADR-012 空状态显隐必须显式写 `[hidden]`（v0.5）：`.empty` 的 `display:flex` 会覆盖 UA 的 `[hidden]{display:none}`，导致有数据仍显示空态；凡自定义 display 的可隐藏元素，都要补 `xxx[hidden]{display:none}`
+- ADR-013 删除必须二次确认，且用行内确认（v0.5）：直接删除误触成本高，系统 `confirm`/模态框既丑又打断；改为该行就地变为「删除这条记录？取消/删除」，3.5s 无操作自动还原，点外部或 Esc 也还原
+- ADR-014 视觉与交互规则文档化（v0.5）：把令牌、组件、动效、禁止项沉淀到 `docs/ai-team/design-system.md`，作为强制规范，防止后续改动（含 AI 生成）退回低质量默认样式
 
 ## 6. 启动与安装问题现状
 
@@ -88,5 +101,6 @@
 
 ## 7. 设计评审
 
-- 需求覆盖：REQ-001~008 代码侧具备；便携版启动与贴顶隐藏已实测可用，**REQ-008 待全新机器安装验收**。  
+- 需求覆盖：REQ-001~009 代码侧具备；便携版启动与贴顶隐藏已实测可用，**REQ-008 待全新机器安装验收**。  
+- **UI 改动的强制规范见 [design-system.md](design-system.md)**：视觉令牌、组件、动效、删除确认、禁止清单与提交前自检，任何界面改动先读该文。
 - 本文随实现更新；以实现代码 + README「当前状态」为准。
