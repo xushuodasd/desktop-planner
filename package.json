@@ -1,0 +1,81 @@
+{
+  "name": "desktop-planner",
+  "private": true,
+  "version": "1.0.0",
+  "description": "桌面悬浮工作计划板（构建入口）",
+  "author": "desktop-planner",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron app",
+    "dist": "node scripts/run-dist.js",
+    "dist:dir": "node scripts/run-dist.js --dir"
+  },
+  "devDependencies": {
+    "@electron/fuses": "^2.1.3",
+    "electron": "43.3.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.desktop-planner.workboard",
+    "productName": "悬浮工作台",
+    "copyright": "Copyright © desktop-planner",
+    "directories": {
+      "app": "app",
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "**/*",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "scripts/tray-host.ps1",
+        "to": "scripts/tray-host.ps1"
+      },
+      {
+        "from": "scripts/start-tray-host.vbs",
+        "to": "scripts/start-tray-host.vbs"
+      },
+      {
+        "from": "app/assets/tray-win.ico",
+        "to": "scripts/tray-win.ico"
+      },
+      {
+        "from": "app/assets/icon.ico",
+        "to": "scripts/icon.ico"
+      }
+    ],
+    "win": {
+      "icon": "app/assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "executableName": "DesktopPlanner",
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "signAndEditExecutable": false,
+      "signDlls": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "悬浮工作台",
+      "uninstallDisplayName": "悬浮工作台",
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
+      "language": "2052"
+    },
+    "asar": true,
+    "afterPack": "./scripts/afterPack.js"
+  }
+}

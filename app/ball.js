@@ -1,7 +1,6 @@
 'use strict';
 /**
- * 悬浮球窗口渲染层：按下拖动 / 松开点击的判定由主进程完成（DRAG_THRESHOLD）。
- * 渲染层只负责把屏幕坐标经白名单 IPC 上报（REQ-001）。
+ * 悬浮球：拖动 / 点击由主进程判定；悬停用于边缘吸附时滑出大半个。
  */
 const api = window.workboard;
 const root = document.getElementById('ballRoot');
@@ -9,7 +8,7 @@ const root = document.getElementById('ballRoot');
 let pressing = false;
 
 root.addEventListener('mousedown', (ev) => {
-  if (ev.button !== 0) return; // 只响应左键
+  if (ev.button !== 0) return;
   ev.preventDefault();
   pressing = true;
   root.classList.add('dragging');
@@ -30,7 +29,15 @@ function endPress(ev) {
 
 root.addEventListener('mouseup', endPress);
 window.addEventListener('blur', () => {
-  // 焦点意外丢失时复位按压态，避免拖动状态悬挂
   pressing = false;
   root.classList.remove('dragging');
+});
+
+root.addEventListener('mouseenter', () => {
+  if (pressing) return;
+  api.ballHover(true).catch(() => {});
+});
+root.addEventListener('mouseleave', () => {
+  if (pressing) return;
+  api.ballHover(false).catch(() => {});
 });

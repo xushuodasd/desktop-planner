@@ -27,10 +27,11 @@ contextBridge.exposeInMainWorld('workboard', {
   panelShow: () => ipcRenderer.invoke('panel:show'),
   panelHide: () => ipcRenderer.invoke('panel:hide'),
 
-  // 悬浮球拖动（REQ-001；只上报屏幕坐标，判定在主进程）
+  // 悬浮球拖动 / 边缘吸附悬停（只上报坐标与悬停态，判定在主进程）
   ballDragStart: (pt) => ipcRenderer.invoke('ball:drag-start', pt),
   ballDragMove: (pt) => ipcRenderer.invoke('ball:drag-move', pt),
   ballDragEnd: (pt) => ipcRenderer.invoke('ball:drag-end', pt),
+  ballHover: (inside) => ipcRenderer.invoke('ball:hover', !!inside),
 
   // 主进程推送（白名单事件）
   onDataChanged: (cb) => subscribe('data:onchange', cb),

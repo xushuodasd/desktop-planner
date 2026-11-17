@@ -1,46 +1,77 @@
 # 架构与设计 —— 桌面悬浮工作计划板（desktop-planner）
 
-> 状态：**已批准（总监决策）**；版本：v1.0；负责人：研发总监；更新：2026-11-17
-> 需求关联：requirements.md v0.1（REQ-001~008）；授权依据：老板 2026-11-17 一次性批准一期范围并授权总监定技术、直达可验收交付。
+> 状态：**实现中（暂停验收）**；版本：v1.1；负责人：研发总监；更新：2026-11-17  
+> 需求关联：requirements.md v0.2（REQ-001~008）  
+> 说明：安装包与本机启动闭环未完成，已按老板要求暂停开发，仅维护文档与代码现状。
 
 ## 1. 设计目标与边界
-- 关联需求：REQ-001~008（requirements.md v0.1）。本期目标：免安装、双击即用、纯本地的 Win11 悬浮待办工具，数据为 AI 可读 JSON。
-- 环境：Windows 11（兼容 Win10 尽力而为）；Node v24.20.0 / npm 11.19.0 已装；**Electron 锁定 43.3.0**（本机已有完整缓存 zip，零网络依赖）；无 Rust/.NET。
-- 质量约束：启动 ≤5s；常驻内存 ≤200MB；离线运行；无第三方 UI 框架（降低供应链与体积风险）。
-- 非目标：云同步、多用户、历史视图、报表、自动更新、打包成单文件安装器。
 
-## 2. 产品交互与流程
-- 使用流程：双击启动 → 桌面出现悬浮球 → 单击展开半透明面板 → 上半区"今日计划"逐行录入（时间段+事项）→ 勾选完成自动转入下半区"已办"（或直接在已办区手动补记）→ 数据即时写入 data/workboard.json → 托盘退出。
-- 界面清单：悬浮球窗口（56px 圆形）、主面板窗口（约 360×560：日期头 + 计划区 + 已办区 + 底部输入行）、托盘菜单（显示/隐藏悬浮球、开机自启开关、退出）。
-- 交互状态：空状态（引导文案"添加今天第一行计划"）；文件被外部修改 → 自动重载；JSON 损坏 → 备份为 .bak 后以空数据重建并提示。
-- 可用性：中文字体（微软雅黑/Segoe UI Variable）；面板半透明度 60%–100% 可调（设置滑杆，持久化）；Esc 或点击悬浮球收起。
+- 关联需求：REQ-001~008。目标：纯本地 Win11 悬浮待办；正式交付形态为 **NSIS 安装包 + 桌面快捷方式**；数据 AI 可读 JSON。
+- 环境：Windows 11（Win10 尽力）；**Electron 43.3.0**；打包 **electron-builder 25**。
+- 质量约束：启动 ≤5s；常驻 ≤200MB；离线；UI 无第三方框架。
+- 非目标（本期）：云同步、多用户、历史视图、报表、自动更新、代码签名。
+
+## 2. 产品交互
+
+- 流程：启动 → 悬浮球 → 单击开面板 → 计划/已办编辑 → 写 JSON → 托盘退出。
+- 悬浮球：56px；可拖；**靠近工作区边缘吸附**；缩进后露约 6px 细边；悬停滑出约 72% 直径，移开延时缩回。
+- 面板：约 360×560；磨砂/半透明；Esc 或再点球收起；不抢焦点（日常）。
+- 托盘：显示/隐藏球、开机自启、退出；Win11 上 Electron.Tray 不稳时走 **wscript → STA PowerShell NotifyIcon**（`scripts/tray-host.ps1`）。
 
 ## 3. 结构与数据
-- 上下文：单机单用户；信任边界仅本机文件；无网络、无遥测。
-- 模块职责（Electron 双窗口 + 预加载桥）：
-  - `app/main.js` 主进程：创建悬浮球窗（frameless/transparent/alwaysOnTop/skipTaskbar/可拖拽）与面板窗（frameless/transparent/alwaysOnTop）；托盘；单实例锁；JSON 读写（原子写：tmp+rename）+ 文件监听（外部修改→广播重载）；开机自启（app.setLoginItemSettings，用户级无需管理员）。〔对应 REQ-001/002/006/007〕
-  - `app/preload.js`：contextIsolation 桥，仅暴露 data:load/save、settings:get/set、panel:toggle 等白名单 IPC。
-  - `app/renderer.*`：纯 HTML/CSS/JS UI（无框架）：计划/已办双区、增删改、勾选流转、设置（透明度/主题跟随系统）。
-  - `app/assets/`：悬浮球与托盘图标（.ico/.png，渐变球+对勾母题）。
-  - `scripts/setup-runtime.ps1`：从本机 electron 缓存提取 v43.3.0 → `runtime/`；生成"启动悬浮工作台"快捷方式（.lnk + 备用 .vbs）。〔对应 REQ-008〕
-- 数据模型：见 requirements.md §5（workboard.json v1：days.<日期>.plans[]/dones[]，settings；UTF-8；schemaVersion 字段预留升级）。
-- 接口契约：IPC 白名单（invoke/handle），渲染层永不直接触盘；JSON 字段校验：读入时忽略非法字段并保留原值，不静默丢数据。
-- 数据迁移：一期无迁移；schemaVersion 预留；删除软件文件夹即数据随 `data/` 一并带走（可备份）。
 
-## 4. 运行与安全
-- 本地运行：`runtime\electron.exe app`（快捷方式封装）；前置条件=Windows 10/11 x64；停止=托盘退出；全程离线。
-- 配置与密钥：无密钥；设置存 workboard.json settings 节。
-- 安全措施：contextIsolation=true、nodeIntegration=false、sandbox=true、CSP 仅允许自身资源；无远程内容加载；文件操作限定 app 目录 data/ 内。
-- 故障处理：JSON 损坏自动 .bak+重建并界面提示；单实例锁防重复启动；崩溃即退出（无守护），重开即可；数据写入原子化，断电最多丢最后一次未保存修改。
-- 协作：本地 Git 仓库（无远端、不推送）；main 受保护由总监集成；任务走 feat/ 分支 + worktree；本地检查留证替代 CI。
+### 3.1 模块
 
-## 5. 权衡与扩展（ADR 摘要）
-- ADR-001 Electron 43.3.0（锁定缓存版本）：✅ 零网络依赖、Win11 透明/置顶/托盘能力成熟；代价=内存约 150–200MB。被否方案：Tauri（需装 Rust 工具链，网络+授权双风险）、Python+PySide6（UI 精美度与打包可靠性差）。
-- ADR-002 无构建工具链（零 npm 依赖，vanilla JS）：✅ 供应链风险为零、可维护；代价=无 TS 类型检查（二期可加）。
-- ADR-003 面板半透明：CSS rgba 为基线（保底必现）；`setBackgroundMaterial('acrylic')` try/catch 增强（Win11 真毛玻璃，失败静默回退）。
-- ADR-004 交付形态=绿色文件夹+快捷方式（不打包安装器）：✅ 免管理员、可删可移；代价=首次启动需运行 setup-runtime.ps1（总监集成时执行）。
-- 技术债：无；扩展点：schemaVersion、数据文件位置、主题系统均为二期预留。
+| 路径 | 职责 |
+|---|---|
+| `app/main.js` | 双窗口、拖拽/吸附、IPC、JSON 原子写与 watch、托盘拉起、单实例锁、开机自启 |
+| `app/preload.js` | contextIsolation 白名单桥 |
+| `app/renderer.js` + `index.html` + `style.css` | 计划/已办 UI、设置 |
+| `app/ball.html` + `ball.js` | 悬浮球渲染与拖拽/悬停上报 |
+| `app/assets/` | icon / tray 图标（扁平蓝底白勾） |
+| 根 `package.json` | electron-builder：NSIS、桌面/开始菜单快捷方式、`extraResources` 打入托盘脚本 |
+| `scripts/setup-runtime.ps1` | 开发：解压 Electron → `runtime\`，生成 `DesktopPlanner.exe` |
+| `scripts/tray-host.ps1` + `start-tray-host.vbs` | 托盘兜底 |
+| `scripts/afterPack.js` | 关闭 asar 完整性 fuse |
+| `scripts/make-portable.ps1` | 干净便携包（不经 builder 改 exe）→ `dist/portable` |
+| `scripts/run-dist.js` | 带本地 cache/tmp 调 builder |
 
-## 6. 设计评审
-- 评审范围：需求一致性（REQ-001~008 全覆盖）、安全（本地单机，无远端攻击面）、数据（原子写+外部编辑兼容+损坏恢复）。
-- 批准：总监 2026-11-17（授权依据见文件头）；实现偏离时更新本文并记录。
+### 3.2 数据路径
+
+- **打包后**（`app.isPackaged`）：`文档\悬浮工作台\`（含 `workboard.json`、`appdata\`）
+- **开发**：`项目\data\`
+- 模型：requirements.md §5；`settings` 含 opacity / theme / autostart / ballPosition / ballDock
+
+### 3.3 安全
+
+- `contextIsolation` + `sandbox` + CSP 仅自身资源；无网络；渲染层不触盘。
+
+## 4. 交付与构建
+
+- 目标产物：`dist/悬浮工作台-Setup-*.exe`（NSIS，`createDesktopShortcut: always`）
+- 可执行文件名：`DesktopPlanner.exe`（便于 Win11 通知区识别）
+- 构建：`npm run dist`（见 README）
+- 开发启动：`runtime\DesktopPlanner.exe` + `app\`；VBS 须 **ASCII**（UTF-8 中文会编译失败）
+
+## 5. ADR 摘要
+
+- ADR-001 Electron 43.3.0  
+- ADR-002 UI = vanilla JS；构建依赖 = electron-builder  
+- ADR-003 面板半透明：CSS + 可选 acrylic  
+- ADR-004 正式交付 = NSIS + 桌面快捷方式；数据在「文档\悬浮工作台」；绿文件夹仅开发  
+- ADR-005 托盘 = WinForms/PowerShell 兜底（Electron.Tray 在 Win11 不可靠）  
+- ADR-006 未签名构建须在 afterPack 关闭 `EnableEmbeddedAsarIntegrityValidation`，否则可能进 JS 前秒退  
+
+## 6. 已知未闭环问题（暂停点）
+
+1. SmartScreen 拦截未签名 Setup / exe  
+2. NSIS 安装时写入 Uninstall 程序偶发「不能打开要写入的文件」（Defender 占用嫌疑）  
+3. 打包/解压版在部分环境下退出码 `-2147483645` 且无 `desktop-planner-early.log`（进 JS 前失败）；Cursor 终端内启动不可作为判据  
+4. 便携包 `scripts/make-portable.ps1` 与 `启动-便携版.vbs` 已备，待资源管理器侧复测  
+
+续做建议顺序：资源管理器验证便携版 → 稳定后再 `npm run dist` → 自定义安装目录绕开 Programs 锁文件 → 有证书再签名。
+
+## 7. 设计评审
+
+- 需求覆盖：REQ-001~008 代码侧基本具备；**REQ-008 安装验收未通过**。  
+- 本文随实现更新；暂停期间以代码 + README「当前状态」为准。

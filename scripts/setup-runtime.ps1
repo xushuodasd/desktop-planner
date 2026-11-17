@@ -50,11 +50,32 @@ if (Test-Path $electronExe) {
     Write-Host "[setup] 解压完成。"
 }
 
-# 3) 生成"启动悬浮工作台.lnk"（绝对路径按脚本运行时解析）
+# 3) 复制为 DesktopPlanner.exe：Win11 托盘按 exe 名识别应用，直接用 electron.exe 常被藏进「隐藏的图标」或根本不显示
+$appExe = Join-Path $runtimeDir 'DesktopPlanner.exe'
+Copy-Item -Path $electronExe -Destination $appExe -Force
+Write-Host "[setup] 已生成独立进程：$appExe"
+
+# 3b) 编译托盘宿主 TrayHost.exe（WinForms NotifyIcon，Win11 通知区比 Electron.Tray 稳）
+$csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+$trayCs = Join-Path $root 'scripts\TrayHost.cs'
+$trayExe = Join-Path $runtimeDir 'TrayHost.exe'
+if (Test-Path $csc -PathType Leaf -and Test-Path $trayCs -PathType Leaf) {
+    & $csc /nologo /target:winexe /optimize+ /r:System.Windows.Forms.dll /r:System.Drawing.dll /out:$trayExe $trayCs
+    if (Test-Path $trayExe) {
+        Unblock-File -Path $trayExe -ErrorAction SilentlyContinue
+        Write-Host "[setup] 已编译托盘宿主：$trayExe"
+    } else {
+        Write-Host '[setup] 警告：TrayHost.exe 编译失败，托盘可能不显示'
+    }
+} else {
+    Write-Host '[setup] 警告：未找到 csc 或 TrayHost.cs，跳过托盘宿主编译'
+}
+
+# 4) 生成"启动悬浮工作台.lnk"（绝对路径按脚本运行时解析）
 $lnkPath = Join-Path $root '启动悬浮工作台.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($lnkPath)
-$shortcut.TargetPath = $electronExe
+$shortcut.TargetPath = $appExe
 $shortcut.Arguments = "`"$appDir`""
 $shortcut.WorkingDirectory = $root
 $shortcut.IconLocation = "$iconPath,0"

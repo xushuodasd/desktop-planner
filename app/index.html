@@ -8,68 +8,67 @@
   <title>悬浮工作台</title>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body>
-  <div class="panel" id="panel">
-    <!-- 顶栏：日期 + 收起 -->
+<body class="panel-body">
+  <div class="panel" id="panel" data-view="plans">
     <header class="topbar">
-      <div class="date-wrap">
-        <div class="date-title" id="dateTitle">—</div>
-        <div class="date-sub" id="dateSub"></div>
+      <div class="topbar-main">
+        <div class="date-wrap">
+          <div class="date-title" id="dateTitle">—</div>
+          <div class="date-sub" id="dateSub"></div>
+        </div>
+        <button class="traffic-btn traffic-close" id="btnCollapse" title="收起（Esc）" aria-label="收起">
+          <svg class="traffic-icon" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M3 3l6 6M9 3L3 9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </button>
       </div>
-      <div class="topbar-actions">
-        <button class="icon-btn" id="btnCollapse" title="收起（Esc）" aria-label="收起">✕</button>
+
+      <div class="seg" role="tablist" aria-label="视图切换">
+        <button type="button" class="seg-btn is-active" id="tabPlans" role="tab" aria-selected="true" data-view="plans">
+          待办 <span class="seg-count" id="planCount">0</span>
+        </button>
+        <button type="button" class="seg-btn" id="tabDones" role="tab" aria-selected="false" data-view="dones">
+          已办 <span class="seg-count" id="doneCount">0</span>
+        </button>
+        <span class="seg-thumb" id="segThumb" aria-hidden="true"></span>
       </div>
     </header>
 
-    <!-- 提示条（外部修改 / 损坏重建提醒） -->
     <div class="toast" id="toast" hidden></div>
 
-    <!-- 今日计划 -->
-    <section class="section plans-section">
-      <div class="section-head">
-        <span class="section-title">今日计划</span>
-        <span class="section-count" id="planCount">0 项</span>
-      </div>
-      <div class="empty" id="plansEmpty">添加今天第一行计划 ↓</div>
-      <ul class="list" id="planList"></ul>
-    </section>
+    <div class="stage" id="stage">
+      <section class="view view-plans is-active" id="viewPlans" role="tabpanel">
+        <div class="empty" id="plansEmpty">还没有待办，在下方添加第一项</div>
+        <ul class="list" id="planList"></ul>
+      </section>
 
-    <!-- 已办 -->
-    <section class="section dones-section">
-      <div class="section-head">
-        <span class="section-title">已办</span>
-        <span class="section-count" id="doneCount">0 项</span>
-      </div>
-      <div class="empty" id="donesEmpty">暂无已办记录</div>
-      <ul class="list" id="doneList"></ul>
-      <!-- 已办手动补记输入行（REQ-005） -->
-      <div class="inline-add">
-        <input type="text" id="doneTimeInput" class="input input-time" placeholder="时间段，可留空" maxlength="40" />
-        <input type="text" id="doneTextInput" class="input input-text" placeholder="补记已办事项，回车添加" maxlength="200" />
-      </div>
-    </section>
-
-    <!-- 设置行 -->
-    <div class="settings-row">
-      <label class="setting-item opacity-item">
-        <span class="setting-label">透明度</span>
-        <input type="range" id="opacitySlider" min="60" max="100" step="1" value="85" />
-        <span class="setting-value" id="opacityValue">85%</span>
-      </label>
-      <label class="setting-item">
-        <span class="setting-label">主题</span>
-        <select id="themeSelect" class="select">
-          <option value="auto">跟随系统</option>
-          <option value="light">浅色</option>
-          <option value="dark">深色</option>
-        </select>
-      </label>
+      <section class="view view-dones" id="viewDones" role="tabpanel" hidden>
+        <div class="empty" id="donesEmpty">暂无已办记录</div>
+        <ul class="list" id="doneList"></ul>
+      </section>
     </div>
 
-    <!-- 底部主输入行（REQ-003） -->
-    <footer class="composer">
-      <input type="text" id="planTimeInput" class="input input-time" placeholder="时间段 如 9:00-10:00" maxlength="40" />
-      <input type="text" id="planTextInput" class="input input-text" placeholder="事项，回车新增" maxlength="200" />
+    <footer class="dock">
+      <div class="composer" id="composer">
+        <input type="text" id="timeInput" class="input input-time" placeholder="时间段" maxlength="40" />
+        <input type="text" id="textInput" class="input input-text" placeholder="事项，回车添加" maxlength="200" />
+      </div>
+
+      <div class="settings-row">
+        <label class="setting-item opacity-item">
+          <span class="setting-label">透明度</span>
+          <input type="range" id="opacitySlider" min="50" max="100" step="1" value="72" />
+          <span class="setting-value" id="opacityValue">72%</span>
+        </label>
+        <label class="setting-item">
+          <span class="setting-label">主题</span>
+          <select id="themeSelect" class="select">
+            <option value="auto">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </label>
+      </div>
     </footer>
   </div>
 

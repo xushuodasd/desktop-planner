@@ -1,4 +1,15 @@
 runtime/
 data/
+dist/
+.electron-cache/
+.electron-builder-cache/
+.tmp/
 *.lnk
 node_modules/
+data/boot.log
+data/tray-*.log
+data/electron-out.log
+data/el.log
+data/launch-*.log
+debug.log
+
