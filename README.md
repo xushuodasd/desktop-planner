@@ -1,5 +1,9 @@
 # 悬浮工作台（desktop-planner）
 
+<p align="center">
+  <img src="app/assets/icon.png" alt="悬浮工作台图标" width="88">
+</p>
+
 Win11 桌面悬浮工作计划板：单面板悬浮窗（360×560，无边框、半透明）、贴顶自动隐藏（QQ 式）、本地 JSON（方便 AI 读写）、离线无账号。
 
 <p align="center">
