@@ -43,7 +43,15 @@ function setIntegrity(dir, level) {
  * 若 dist 留着上次产物设置的 Medium 标签，会因为无写权限而报 Access is denied。
  */
 const distDir = path.join(root, 'dist');
-if (fs.existsSync(distDir)) setIntegrity(distDir, 'L');
+if (fs.existsSync(distDir)) {
+  setIntegrity(distDir, 'L');
+  // 上次产物里的 blockmap / latest.yml 若仍带 Medium 标签，构建进程无法覆盖（Access is denied），先删掉
+  for (const name of fs.readdirSync(distDir)) {
+    if (name.endsWith('.blockmap') || name === 'latest.yml') {
+      try { fs.rmSync(path.join(distDir, name), { force: true }); } catch (e) { /* ignore */ }
+    }
+  }
+}
 
 const r = spawnSync(
   process.platform === 'win32' ? 'npx.cmd' : 'npx',
