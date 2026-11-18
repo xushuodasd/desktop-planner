@@ -57,7 +57,7 @@
         }
       ],
       "executableName": "DesktopPlanner",
-      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "artifactName": "desktop-planner-Setup-${version}.${ext}",
       "signAndEditExecutable": false,
       "signDlls": false
     },
