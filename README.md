@@ -3,8 +3,18 @@
 Win11 桌面悬浮工作计划板：单面板悬浮窗（360×560，无边框、半透明）、贴顶自动隐藏（QQ 式）、本地 JSON（方便 AI 读写）、离线无账号。
 
 <p align="center">
-  <img src="docs/images/panel.png" alt="悬浮工作台主界面：待办列表与时间滚轮输入" width="300">
+  <img src="docs/images/panel.png" alt="主面板：待办列表与时间输入" width="240">
+  &nbsp;
+  <img src="docs/images/review.png" alt="回顾窗口：周视图、完成与待办统计" width="560">
 </p>
+<p align="center"><sub>左：主面板（待办 / 已办、滚轮选择时间）　右：回顾（日 / 周 / 月、搜索、Markdown / CSV 导出）</sub></p>
+
+<p align="center">
+  <img src="docs/images/desktop.png" alt="桌面悬浮效果：半透明玻璃面板浮在壁纸上" width="440">
+  &nbsp;
+  <img src="docs/images/docked.png" alt="贴顶收起后仅保留顶部细边" width="440">
+</p>
+<p align="center"><sub>左：桌面悬浮（玻璃材质透出壁纸）　右：拖到屏幕顶端自动收起，仅保留顶部细边</sub></p>
 
 ## 当前状态（2026-11-18）
 
