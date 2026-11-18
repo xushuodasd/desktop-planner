@@ -101,6 +101,7 @@
 6. 硬编码颜色（必须用 `:root` / `body[data-theme]` 令牌，亮暗两套都要给）。
 7. 只适配深色、不检查浅色；只适配短文本、不检查长文本；只检查有数据、不检查空态。
 8. 直接改样式却不同步 `README.md` / `design.md` / 本文件。
+9. 使用默认 Electron 图标，或手工塞一张来源不明的 png/ico；应用与托盘图标统一由 `scripts/make-icons.py` 生成、`scripts/afterPack.js` 写入 exe。
 
 ## 7. 代码约束
 

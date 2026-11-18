@@ -36,17 +36,19 @@
 | `app/renderer.js` + `index.html` + `style.css` | 计划/已办 UI |
 | `app/settings.html` + `settings.js` | 独立设置窗口（透明度 / 主题 / 开机自启） |
 | `app/review.html` + `review.js` | 独立回顾窗口（日/周/月、搜索、导出） |
-| `app/assets/` | icon / tray 图标（扁平蓝底白勾） |
+| `app/assets/` | icon / tray 图标（方案 A「玻璃卡片」，由 `scripts/make-icons.py` 生成） |
 | 根 `package.json` | electron-builder：NSIS、桌面/开始菜单快捷方式、`extraResources` 打入托盘脚本 |
 | `scripts/setup-runtime.ps1` | 开发：解压 Electron → `runtime\`，生成 `DesktopPlanner.exe` |
 | `scripts/tray-host.ps1` + `start-tray-host.vbs` | 托盘兜底 |
-| `scripts/afterPack.js` | 关闭 asar 完整性 fuse |
+| `scripts/afterPack.js` | 用缓存里的 rcedit 把 `icon.ico` 写进 exe，再关闭 asar 完整性 fuse（`signAndEditExecutable: false` 时图标不会自动写入） |
+| `scripts/make-icons.py` | Pillow 程序化绘制图标（4x 超采样、同心圆角、玻璃渐变 alpha），输出 `icon.png/ico` 与托盘版 |
+| `scripts/installer.nsh` | 安装时创建 `%APPDATA%\desktop-planner\appdata`，并给快捷方式追加启动参数 |
 | `scripts/make-portable.ps1` | 干净便携包（不经 builder 改 exe）→ `dist/portable` |
-| `scripts/run-dist.js` | 带本地 cache/tmp 调 builder |
+| `scripts/run-dist.js` | 带本地 cache/tmp 调 builder；构建前清理上次 blockmap/latest.yml，成功后统一设 Medium 完整性 |
 
 ### 3.2 数据路径
 
-- **打包后**（`app.isPackaged`）：工作数据在 `文档\悬浮工作台\workboard.json`（只存设置）+ `文档\悬浮工作台\months\YYYY-MM.json`（每月明细）；Chromium userData 固定为 `%APPDATA%\desktop-planner\appdata`（纯 ASCII，需预先创建）
+- **打包后**（`app.isPackaged`）：工作数据在 `文档\悬浮工作台\workboard.json`（只存设置）+ `文档\悬浮工作台\months\YYYY-MM.json`（每月明细）；v1 迁移前会留 `workboard.v1.bak`（首次迁移时创建，仅保留最早一份）；Chromium userData 固定为 `%APPDATA%\desktop-planner\appdata`（纯 ASCII，需预先创建）
 - **开发**：`项目\data\workboard.json` + `项目\data\months\` + `项目\data\appdata\`
 - 模型：requirements.md §5；`settings` 含 opacity（默认 0.5，clamp 0.2–1）/ theme / autostart / panelPosition
 - 读写：`data:load` 只返回当天与设置；`day:save` 只写所在月份分片；`month:load` / `history:query` 供回顾窗口按需读取；`history:export` 走系统「另存为」导出 Markdown / CSV
@@ -59,12 +61,14 @@
 
 ## 4. 交付与构建
 
-- 目标产物：`dist/悬浮工作台-Setup-*.exe`（NSIS，`createDesktopShortcut: always`）
-- 可执行文件名：`DesktopPlanner.exe`（便于 Win11 通知区识别）
-- 构建：`npm run dist`（见 README）；构建后需把 `dist` 产物从低完整性标签统一设为 **Medium**（工作区曾感染低完整性标签，导致打包 exe 异常）
+- 目标产物：`dist/desktop-planner-Setup-*.exe`（NSIS，`createDesktopShortcut: always`）。产物名必须 ASCII：中文名会让 NSIS 报 `Can't open output file`
+- 可执行文件名：`DesktopPlanner.exe`（便于 Win11 通知区识别）；产品名 / 快捷方式名 / 卸载项显示名均为「悬浮工作台」
+- 构建：`npm run dist`（见 README）。`scripts/run-dist.js` 用项目内 `.electron-cache/.electron-builder-cache/.tmp`，构建前把 `dist` 设低完整性并删除上次的 `.blockmap` / `latest.yml`（残留 Medium 标签会导致 `Access is denied`），成功后统一设为 **Medium**（工作区曾感染低完整性标签，导致打包 exe 异常）
+- 图标：`win.signAndEditExecutable: false`（避免下载 winCodeSign 时 macOS 软链接解压失败），因此 exe 图标由 `scripts/afterPack.js` 用缓存 rcedit 手工写入，再执行 flipFuses；安装包与卸载器图标由 `MUI_ICON` 指定 `app/assets/icon.ico`
 - 开发启动：`runtime\DesktopPlanner.exe --no-sandbox "--user-data-dir=<项目>\data\appdata" "<项目>\app"`；VBS 须 **ASCII**（UTF-8 中文会编译失败）
 - 启动参数（本机必须）：`--no-sandbox`（Chromium 沙箱初始化崩溃 `0x80000003`）+ `--user-data-dir` 指向纯 ASCII 路径且目录需预先创建（Chromium 不会自动创建）
 - 安装包：`scripts/installer.nsh` 在安装时创建 `%APPDATA%\desktop-planner\appdata`，并给桌面/开始菜单快捷方式追加上述参数
+- 升级：`appId` 固定 → NSIS 原地升级（先卸旧程序文件再装新版），快捷方式/卸载项不重复；工作数据在「文档\悬浮工作台」，与安装目录解耦；单实例锁防止新旧进程同时运行。若安装时手工改到别的目录，旧目录文件可能残留（数据不会分叉）
 
 ## 5. ADR 摘要
 
@@ -83,6 +87,8 @@
 - ADR-013 删除必须二次确认，且用行内确认（v0.5）：直接删除误触成本高，系统 `confirm`/模态框既丑又打断；改为该行就地变为「删除这条记录？取消/删除」，3.5s 无操作自动还原，点外部或 Esc 也还原
 - ADR-014 视觉与交互规则文档化（v0.5）：把令牌、组件、动效、禁止项沉淀到 `docs/ai-team/design-system.md`，作为强制规范，防止后续改动（含 AI 生成）退回低质量默认样式
 - ADR-015 贴顶滑动改为「缓动 + 惯性 + 悬停意图」（v0.5）：原来的 8 步线性位移（约 112ms）生硬且无收势；改为时间基准 16ms 帧驱动，滑出 280ms `easeOutExpo`、收起 220ms `easeInCubic`，可反向打断；细边悬停 90ms 才弹出；渲染层叠加 5–7px 内容惯性。代价是主进程多一个定时器与一次跨进程状态广播
+- ADR-016 品牌图标必须在 afterPack 手工写入 exe（v0.6）：`signAndEditExecutable: false` 时 electron-builder 不会改 exe 资源，图标永远是 Electron 默认；打开它又会触发 winCodeSign 下载与 macOS 符号链接解压失败。改为 `afterPack` 里用缓存中的 `rcedit-x64.exe` 写 `icon.ico`，随后 `flipFuses` 关闭 asar 完整性；两个 exe 均已反提取验证图标
+- ADR-017 升级安全：迁移前备份 + 失败不落盘（v0.6）：覆盖安装本身由固定 `appId` 保证原地升级，真正风险在数据格式迁移。规定：迁移前复制 `workboard.v1.bak`（仅首次）、迁移抛错时不重写根文件并保留内存旧数据（下次启动重试）。保证「装新包」在任何失败路径下都不会清掉旧记录
 
 ## 6. 启动与安装问题现状
 
@@ -102,6 +108,6 @@
 
 ## 7. 设计评审
 
-- 需求覆盖：REQ-001~009 代码侧具备；便携版启动与贴顶隐藏已实测可用，**REQ-008 待全新机器安装验收**。  
+- 需求覆盖：REQ-001~010 代码侧具备；便携版启动与贴顶隐藏已实测可用，**REQ-008 待全新机器安装验收**（当前交付版本 1.0.1）。  
 - **UI 改动的强制规范见 [design-system.md](design-system.md)**：视觉令牌、组件、动效、删除确认、禁止清单与提交前自检，任何界面改动先读该文。
 - 本文随实现更新；以实现代码 + README「当前状态」为准。

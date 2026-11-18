@@ -32,9 +32,10 @@ Win11 桌面悬浮工作计划板：单面板悬浮窗（360×560，无边框、
 | 时间滚轮选择（单时间点，非文本输入） | 已实现（默认当前时刻、5 分钟刻度、滑动即生效） |
 | Obsidian Glass 视觉体系 | 已实现（玻璃分层、圆角阶梯 24/18/13、单一蓝色强调、统一阻尼动效） |
 | 长事项点击展开（REQ-009） | 已实现（仅溢出时可点，行内展开/收起） |
-| 扁平苹果风对勾图标 | 已实现 |
 | 数据层冒烟测试 | 已通过（`node scripts/test/smoke-datastore.js`，57 项全 PASS） |
-| NSIS 安装包流水线 | 已配置并构建（`npm run dist` → `dist\悬浮工作台-Setup-*.exe`） |
+| 覆盖安装升级（REQ-010） | 已实现（固定 appId 原地升级；数据在文档目录不受影响；迁移前备份 `workboard.v1.bak`、失败不落盘） |
+| 自定义品牌图标（应用 + 托盘） | 已实现（`scripts/make-icons.py` 生成，`scripts/afterPack.js` 写入 exe） |
+| NSIS 安装包流水线 | 已配置并构建（`npm run dist` → `dist\desktop-planner-Setup-*.exe`） |
 | 便携版启动验收 | 已通过（本机资源管理器实测可启动，贴顶隐藏可用） |
 | 全新机器安装验收 | **未完成**（安装包已构建，尚未在干净机器上做安装/卸载全流程验收） |
 
@@ -50,7 +51,14 @@ Win11 桌面悬浮工作计划板：单面板悬浮窗（360×560，无边框、
 | 开发绿文件夹 | 项目根 `data\workboard.json`（仅设置）+ `data\months\YYYY-MM.json`（每月明细） |
 
 `workboard.json` 只保存 `schemaVersion: 2` 与 `settings`；每天的计划/已办写入所在月份分片，月份文件按需加载。
-旧版（`schemaVersion: 1`，`days` 全在根文件）启动时自动拆分迁移，迁移后根文件不再包含 `days`。
+旧版（`schemaVersion: 1`，`days` 全在根文件）启动时自动拆分迁移，迁移后根文件不再包含 `days`；首次迁移前会复制一份 `workboard.v1.bak`（仅保留最早一份），迁移失败时不重写根文件、下次启动重试。
+
+## 升级（覆盖安装）
+
+- 直接运行新版 `desktop-planner-Setup-*.exe` 即可：`appId` 固定，NSIS 会先卸旧程序文件再装新版，桌面/开始菜单快捷方式与控制面板卸载项都只有一份，不会出现两套。
+- 工作数据在「文档\悬浮工作台」，与安装目录无关，覆盖安装/卸载都不删除；Chromium 缓存在 `%APPDATA%\desktop-planner\appdata`。
+- 安装时**保持默认安装目录**。若手工改到别的目录，旧目录文件可能残留（数据仍只有一份、注册表仍只有一条，单实例锁也保证不会双开）。
+- 升级后请用新快捷方式启动，不要再双击旧的 1.0.0 exe（旧代码不认识 `months\` 目录，只读写根文件）。
 
 ## 开发调试
 
@@ -79,14 +87,15 @@ runtime\DesktopPlanner.exe --no-sandbox "--user-data-dir=<项目>\data\appdata" 
 
 ```powershell
 npm install --registry https://registry.npmmirror.com
-npm run dist          # NSIS → dist\悬浮工作台-Setup-*.exe
+npm run dist          # NSIS → dist\desktop-planner-Setup-*.exe
 npm run dist:dir      # 仅解压目录 → dist\win-unpacked\
 ```
 
 辅助脚本：
 
-- `scripts/run-dist.js`：使用项目内 `.electron-cache` / `.tmp`，避开 AppData 权限问题
-- `scripts/afterPack.js`：关闭 asar 完整性 fuse（未签名构建必要）
+- `scripts/run-dist.js`：使用项目内 `.electron-cache` / `.tmp`，避开 AppData 权限问题；构建前清理上次 `.blockmap` / `latest.yml`，成功后把 `dist` 统一设为 Medium 完整性
+- `scripts/afterPack.js`：用缓存里的 rcedit 把 `icon.ico` 写进 exe（`signAndEditExecutable: false` 时图标不会自动写入），再关闭 asar 完整性 fuse
+- `scripts/make-icons.py`：Pillow 程序化生成应用图标（1024 PNG + 多尺寸 ICO）与托盘图标，改图标只需改这里再运行
 - `scripts/make-portable.ps1`：不经 builder 改 exe，从 `runtime\` 拷贝干净便携包 → `dist\portable\`
 - `scripts/installer.nsh`：安装时创建 `%APPDATA%\desktop-planner\appdata`，并给桌面/开始菜单快捷方式追加 `--no-sandbox --user-data-dir=...`
 
@@ -99,6 +108,9 @@ npm run dist:dir      # 仅解压目录 → dist\win-unpacked\
 5. 构建结束后需把 `dist` 产物从低完整性标签统一设为 Medium（工作区曾感染低完整性标签，导致打包 exe 异常）
 6. 便携版与 NSIS 安装包均已在本机验证可启动；安装包快捷方式已带上述参数，**但尚未做全新机器安装/卸载验收**
 7. `runtime\`、`data\` 目录或 exe 被系统打上**低完整性标签（Low）** 时，Chromium 会因 `Lock file can not be created! Error code: 5` 在进入 `main.js` 前秒退；`启动悬浮工作台.vbs` 每次启动前会执行 `icacls ... /setintegritylevel M` 自愈，若仍失败，检查 early log（`%TEMP%\desktop-planner-early.log`）
+8. 产物名必须是 ASCII（`desktop-planner-Setup-${version}.exe`）：中文名会让 NSIS 报 `Can't open output file`
+9. 上一次构建的 `.blockmap` / `latest.yml` 带 Medium 标签时，再次构建会 `Access is denied`；`run-dist.js` 已在构建前自动删除
+10. 图标：`signAndEditExecutable: false` 时 electron-builder 不会写 exe 图标，必须靠 `afterPack.js` 用 rcedit 写；改成 `true` 会触发 winCodeSign 解压失败
 
 ## 功能摘要
 
