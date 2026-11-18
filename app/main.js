@@ -624,11 +624,22 @@ function loadBoardFromDisk() {
 
   if (legacyCount > 0) {
 
-    migrateLegacyDays(legacyDays);
+    try {
 
-    writeBoard(board); // 重写根文件，清掉 days
+      migrateLegacyDays(legacyDays);
 
-    bootLog(`migrated v1 days=${legacyCount}`);
+      writeBoard(board); // 重写根文件，清掉 days
+
+      bootLog(`migrated v1 days=${legacyCount}`);
+
+    } catch (err) {
+
+      // 迁移中途失败：不重写根文件，内存里保留旧数据，下次启动重试
+      board = sanitizeBoard(parsed, null);
+
+      bootLog(`migrate v1 failed: ${err && err.message}`);
+
+    }
 
   }
 
@@ -1763,8 +1774,22 @@ function writeDay(dateKey, rawDay) {
   return data.days[dateKey];
 }
 
+/** 迁移前留一份旧文件副本，便于回滚（只保留最早一份） */
+function backupLegacyFileOnce() {
+  const bak = path.join(DATA_DIR, 'workboard.v1.bak');
+  if (fs.existsSync(bak) || !fs.existsSync(DATA_FILE)) return;
+  try {
+    fs.copyFileSync(DATA_FILE, bak);
+    bootLog(`v1 backup created: ${bak}`);
+  } catch (err) {
+    bootLog(`v1 backup failed: ${err && err.message}`);
+  }
+}
+
 /** v1 → v2：把旧单文件的天按月份拆分（已有月分片中的同一天优先保留，不覆盖） */
 function migrateLegacyDays(days) {
+
+  backupLegacyFileOnce();
   const grouped = new Map();
   for (const key of Object.keys(days)) {
     if (!validDateKey(key)) continue;
