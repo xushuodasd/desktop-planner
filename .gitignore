@@ -14,3 +14,9 @@ data/launch-*.log
 debug.log
 .trae-html-share-packages/
 
+# 宣传物料（Word/截图/草稿），仅本地保存，不进版本库
+promo/
+
+# electron-builder 打包时在 app/ 生成的空锁文件
+app/package-lock.json
+
