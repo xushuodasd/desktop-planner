@@ -139,9 +139,14 @@ const PANEL_W = 360;
 
 const PANEL_H = 560;
 
-const DOCK_STRIP = 6; // 吸顶隐藏后仍留在屏幕内的细边高度
+const DOCK_STRIP_WIDTH = 104;
+const DOCK_STRIP_HEIGHT = 4;
 const DOCK_SNAP = 26; // 拖到离屏幕顶端这么近就吸进去
 const UNDOCK_DIST = 46; // 往下拖超过这个距离解除吸顶
+const DOCK_REVEAL_MS = 460;
+const DOCK_TUCK_MS = 400;
+const DOCK_HOVER_MS = 90;
+const DOCK_LEAVE_MS = 650;
 
 const RELOAD_DEBOUNCE_MS = 250;
 
@@ -180,10 +185,12 @@ let lastOwnWrite = null; // { text } 自身最近一次写入内容，用于外�
 
 let reloadTimer = null;
 
-let suppressPanelSync = false; // 程序化定位面板期间忽略 move 事件（防误写位置/误吸顶）
+let panelPositionSyncTimer = null; // 程序化定位期间合并 move 事件
+let repairingPanelSize = false;
 
 let panelPosTimer = null; // 面板位置落盘防抖
-let panelDock = null; // { docked, revealed }：贴顶隐藏状态
+let panelDock = null; // { docked, revealed, x, top }：状态与屏幕工作区内的锚点
+let dockStripWindow = null;
 let panelAnimating = false; // 滑入/滑出动画进行中，忽略 move 事件
 let dockCheckTimer = null;
 let dockHideTimer = null;
@@ -434,6 +441,8 @@ function sanitizeDones(list, usedIds) {
       source: v.source === 'from-plan' ? 'from-plan' : 'manual',
 
       completedAt: isStr(v.completedAt) ? v.completedAt.slice(0, 40) : '',
+      ...(validDateKey(v.completedDateKey) && { completedDateKey: v.completedDateKey }),
+      ...(isStr(v.createdAt) && { createdAt: v.createdAt.slice(0, 40) }),
 
     });
 
@@ -467,9 +476,11 @@ function ensureDataFile() {
 
 /** 原子写：tmp + rename（REQ-006；Windows 下 rename 覆盖已存在文件） */
 
-function writeBoard(next) {
+function writeBoard(next, { migrationCommit = false } = {}) {
 
   board = next;
+  // 迁移失败后，普通设置保存也必须保留磁盘上的 v1 明细。
+  if (Object.keys(next.days).length > 0) return;
 
   // 根文件只保留设置；每日明细在 months/YYYY-MM.json
   const text = JSON.stringify({
@@ -486,6 +497,7 @@ function writeBoard(next) {
 
   } catch (err) {
 
+    if (migrationCommit) throw err;
     console.error('[workboard] 原子写失败，降级直写：', err);
 
     try {
@@ -602,12 +614,9 @@ function loadBoardFromDisk() {
 
     writeBoard(defaultBoard(defaultPanelPosition()));
 
-    broadcastData({
-      settings: board.settings,
-      dateKey: todayKeyMain(),
-      day: readDay(todayKeyMain()),
-      notice: '数据文件损坏，已备份为 workboard.json.bak 并重建',
-    });
+    if (panel && !panel.isDestroyed()) {
+      broadcastData({ ...panelData(), notice: '数据文件损坏，已备份为 workboard.json.bak 并重建' });
+    }
 
     return;
 
@@ -628,7 +637,7 @@ function loadBoardFromDisk() {
 
       migrateLegacyDays(legacyDays);
 
-      writeBoard(board); // 重写根文件，清掉 days
+      writeBoard(board, { migrationCommit: true }); // 月分片全部写完后才替换旧根文件
 
       bootLog(`migrated v1 days=${legacyCount}`);
 
@@ -643,7 +652,7 @@ function loadBoardFromDisk() {
 
   }
 
-  broadcastData({ settings: board.settings, dateKey: todayKeyMain(), day: readDay(todayKeyMain()) });
+  if (panel && !panel.isDestroyed()) broadcastData(panelData());
 
 }
 
@@ -852,21 +861,9 @@ function applyAcrylic(win) {
 
 
 function guardHide(e) {
-
   if (isQuitting) return;
-
   e.preventDefault();
-
-  const w = BrowserWindow.fromWebContents(e.sender);
-
-  if (w) {
-
-    w.hide();
-
-    if (w === panel) sendPanelState();
-
-  }
-
+  hidePanel();
 }
 
 
@@ -947,6 +944,7 @@ function createPanel() {
   panel.loadFile(path.join(APP_DIR, 'index.html'));
   // 拖到屏幕顶端会自动收起，只留一条细边；鼠标移上去再滑出。
   panel.on('move', onPanelMove);
+  panel.on('resize', restorePanelSize);
 
   panel.once('ready-to-show', () => {
     if (!panel || panel.isDestroyed()) return;
@@ -1026,6 +1024,24 @@ function clampRect(x, y, w, h, wa) {
 
 
 
+function setPanelBounds(x, y) {
+  panel.setBounds({ x, y, width: PANEL_W, height: PANEL_H });
+}
+
+function restorePanelSize() {
+  if (!panel || panel.isDestroyed() || !panel.isVisible() ||
+      panelAnimating || panelPositionSyncTimer || repairingPanelSize) return;
+  const bounds = panel.getBounds();
+  // 非整数 DPI 下原生边界转换会有 1 DIP 的取整差，界面仍使用固定布局。
+  if (Math.abs(bounds.width - PANEL_W) <= 1 && Math.abs(bounds.height - PANEL_H) <= 1) return;
+  repairingPanelSize = true;
+  try {
+    setPanelBounds(bounds.x, bounds.y);
+  } finally {
+    repairingPanelSize = false;
+  }
+}
+
 /** 打开面板时按记住的位置摆放，并夹取进当前工作区（REQ-002） */
 function positionPanelFromSettings() {
   if (!panel || panel.isDestroyed()) return;
@@ -1037,10 +1053,17 @@ function positionPanelFromSettings() {
 
   // 先改尺寸再改位置：Windows 上 setSize 会把刚设好的坐标打回 (0,0)
   resetPanelDock();
-  suppressPanelSync = true;
+  clearTimeout(panelPositionSyncTimer);
+  panelPositionSyncTimer = setTimeout(() => {
+    panelPositionSyncTimer = null;
+    if (!panel || panel.isDestroyed() || !panel.isVisible()) return;
+    restorePanelSize();
+    const current = panel.getBounds();
+    // 若用户在程序定位期间完成拖动，补处理这次移动。
+    if (current.x !== p.x || current.y !== p.y) onPanelMove();
+  }, 300);
   panel.setSize(PANEL_W, PANEL_H);
-  setTimeout(() => { suppressPanelSync = false; }, 300);
-  panel.setBounds({ x: p.x, y: p.y, width: PANEL_W, height: PANEL_H });
+  setPanelBounds(p.x, p.y);
 }
 
 function sendPanelState() {
@@ -1053,6 +1076,8 @@ function sendPanelState() {
     });
 
   }
+
+  rebuildTrayMenu();
 
 }
 
@@ -1087,12 +1112,13 @@ function resetPanelDock() {
   dockHideTimer = null;
   dockRevealTimer = null;
   stopDockPoll();
+  hideDockStrip();
   panelAnimating = false;
   panelDock = null;
 }
 
 function onPanelMove() {
-  if (panelAnimating || suppressPanelSync) return;
+  if (panelAnimating || panelPositionSyncTimer) return;
   clearTimeout(dockCheckTimer);
   dockCheckTimer = setTimeout(checkPanelDock, 260);
   schedulePanelPositionSave();
@@ -1106,39 +1132,80 @@ function checkPanelDock() {
     if (pb.y <= wa.top + DOCK_SNAP) tuckPanel();
     return;
   }
-  if (pb.y < wa.top - 4) { tuckPanel(); return; }
+  if (panelDock.revealed && pb.y < wa.top - 4) { tuckPanel(); return; }
   if (pb.y >= wa.top + UNDOCK_DIST) undockPanel();
 }
 
-/** 缓动曲线：弹出指数缓出（起步快、落位稳），收起三次缓入（干脆离开） */
-function easeOutExpo(t) {
-  return t >= 1 ? 1 : 1 - Math.pow(2, -10 * t);
-}
-function easeInCubic(t) {
-  return t * t * t;
+function showDockStrip() {
+  if (!dockStripWindow || dockStripWindow.isDestroyed()) {
+    dockStripWindow = new BrowserWindow({
+      width: PANEL_W,
+      height: 32,
+      show: false,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      roundedCorners: false,
+      hasShadow: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      focusable: false,
+      webPreferences: { contextIsolation: true, sandbox: true },
+    });
+    dockStripWindow.setIgnoreMouseEvents(true);
+    dockStripWindow.loadFile(path.join(APP_DIR, 'dock-strip.html')).catch((err) => {
+      console.error('[workboard] 贴顶触发条加载失败：', err);
+    });
+  }
+  dockStripWindow.setPosition(panelDock.x, panelDock.top);
+  dockStripWindow.showInactive();
 }
 
-/** 竖向滑动面板（时间基准，16ms 一帧，可被反向操作从当前位置打断）；只改 y */
-function slidePanelTo(y, duration, ease) {
+function hideDockStrip() {
+  if (dockStripWindow && !dockStripWindow.isDestroyed()) dockStripWindow.hide();
+}
+
+function finishDockSlide() {
+  panelAnimating = false;
+  if (panelDock && !panelDock.revealed) {
+    // 收起后隐藏整个主窗口，避免工作区偏移或窗口缩放让底部露出来。
+    showDockStrip();
+    panel.hide();
+  } else {
+    restorePanelSize();
+  }
+  pollDockCursor();
+}
+
+/** 面板整体平滑加速、减速；反向时从当前窗口位置继续。 */
+function slidePanelTo(y, fullDuration) {
   if (!panel || panel.isDestroyed()) return;
   clearTimeout(dockSlideTimer);
   const pb = panel.getBounds();
   const from = pb.y;
   const dist = y - from;
-  if (!dist) return;
-  const start = Date.now();
-  const easing = ease || easeOutExpo;
-  panelAnimating = true;
+  panelAnimating = Boolean(dist);
+  if (!dist) { finishDockSlide(); return; }
+  const fraction = Math.min(1, Math.abs(dist) / PANEL_H);
+  const duration = Math.max(120, fullDuration * Math.sqrt(fraction));
+  const start = performance.now();
+  let lastY = from;
   const tick = () => {
-    if (!panel || panel.isDestroyed()) { panelAnimating = false; return; }
-    const t = Math.min(1, (Date.now() - start) / duration);
-    panel.setBounds({
-      x: pb.x,
-      y: Math.round(from + dist * easing(t)),
-      width: PANEL_W,
-      height: PANEL_H,
-    });
-    if (t >= 1) { panelAnimating = false; return; }
+    dockSlideTimer = null;
+    if (!panel || panel.isDestroyed() || !panel.isVisible()) { panelAnimating = false; return; }
+    const t = Math.min(1, (performance.now() - start) / duration);
+    const progress = t * t * (3 - 2 * t);
+    // Chromium 的原生整数参数不接受 Math.round 可能产生的负零。
+    const roundedY = Math.round(from + dist * progress);
+    const frameY = roundedY === 0 ? 0 : roundedY;
+    if (frameY !== lastY) {
+      setPanelBounds(pb.x, frameY);
+      lastY = frameY;
+    }
+    if (t >= 1) {
+      finishDockSlide();
+      return;
+    }
     dockSlideTimer = setTimeout(tick, 16);
   };
   tick();
@@ -1158,16 +1225,28 @@ function scheduleReveal() {
   if (dockRevealTimer) return;
   dockRevealTimer = setTimeout(() => {
     dockRevealTimer = null;
-    if (panelDock && panelDock.docked && !panelDock.revealed) revealPanel();
-  }, 90);
+    if (panelDock && !panelDock.revealed && cursorInDockArea(true)) revealPanel();
+  }, DOCK_HOVER_MS);
 }
 
 function scheduleTuck() {
   if (dockHideTimer) return;
   dockHideTimer = setTimeout(() => {
     dockHideTimer = null;
-    if (panelDock && panelDock.docked && panelDock.revealed) tuckPanel();
-  }, 450);
+    if (panelDock?.revealed && !cursorInDockArea(false)) tuckPanel();
+  }, DOCK_LEAVE_MS);
+}
+
+function cursorInDockArea(strip) {
+  const pt = screen.getCursorScreenPoint();
+  if (strip) {
+    const center = panelDock.x + PANEL_W / 2;
+    return Math.abs(pt.x - center) <= DOCK_STRIP_WIDTH / 2 + 10 &&
+      pt.y >= panelDock.top - 2 && pt.y <= panelDock.top + DOCK_STRIP_HEIGHT + 4;
+  }
+  if (!panel || panel.isDestroyed() || !panel.isVisible()) return false;
+  const pb = panel.getBounds();
+  return pt.x >= pb.x && pt.x <= pb.x + pb.width && pt.y >= pb.y && pt.y <= pb.y + pb.height;
 }
 
 /**
@@ -1175,24 +1254,17 @@ function scheduleTuck() {
  * 时都会误报，曾导致打字时面板自己收回。这里只用屏幕坐标判断在不在面板/细边内。
  */
 function pollDockCursor() {
-  if (!panel || panel.isDestroyed() || !panel.isVisible()) { stopDockPoll(); return; }
-  if (!panelDock || !panelDock.docked) { stopDockPoll(); return; }
-  const pt = screen.getCursorScreenPoint();
-  const pb = panel.getBounds();
-  const wa = workAreaForPoint(pt);
-  const inPanel = pt.x >= pb.x && pt.x <= pb.x + pb.width &&
-    pt.y >= pb.y && pt.y <= pb.y + pb.height;
+  if (!panel || panel.isDestroyed() || !panelDock) { stopDockPoll(); return; }
+  if (panelDock.revealed && !panel.isVisible()) { stopDockPoll(); return; }
   if (!panelDock.revealed) {
-    const inStrip = pt.x >= pb.x && pt.x <= pb.x + pb.width &&
-      pt.y >= wa.top - 2 && pt.y <= wa.top + DOCK_STRIP + 2;
-    if (inStrip) scheduleReveal();
+    if (cursorInDockArea(true)) scheduleReveal();
     else {
       clearTimeout(dockRevealTimer);
       dockRevealTimer = null;
     }
     return;
   }
-  if (inPanel) {
+  if (cursorInDockArea(false)) {
     clearTimeout(dockHideTimer);
     dockHideTimer = null;
   } else if (!panelAnimating) {
@@ -1203,21 +1275,25 @@ function pollDockCursor() {
 function tuckPanel() {
   if (!panel || panel.isDestroyed() || !panel.isVisible()) return;
   const pb = panel.getBounds();
-  const wa = workAreaForPoint({ x: Math.round(pb.x + pb.width / 2), y: Math.round(pb.y + pb.height / 2) });
-  panelDock = { docked: true, revealed: false };
+  const { top } = workAreaForPoint({ x: Math.round(pb.x + pb.width / 2), y: Math.round(pb.y + pb.height / 2) });
+  panelDock = { docked: true, revealed: false, x: pb.x, top };
   sendPanelState();
   startDockPoll();
-  slidePanelTo(wa.top - (PANEL_H - DOCK_STRIP), 220, easeInCubic);
+  slidePanelTo(top - PANEL_H, DOCK_TUCK_MS);
 }
 
 function revealPanel() {
-  if (!panel || panel.isDestroyed() || !panel.isVisible()) return;
+  if (!panel || panel.isDestroyed()) return;
   if (!panelDock || !panelDock.docked || panelDock.revealed) return;
-  const pb = panel.getBounds();
-  const wa = workAreaForPoint({ x: Math.round(pb.x + pb.width / 2), y: Math.round(pb.y + pb.height / 2) });
   panelDock.revealed = true;
+  if (!panel.isVisible()) {
+    panelAnimating = true;
+    setPanelBounds(panelDock.x, panelDock.top - PANEL_H);
+    panel.showInactive();
+  }
+  hideDockStrip();
   sendPanelState();
-  slidePanelTo(wa.top, 280, easeOutExpo);
+  slidePanelTo(panelDock.top, DOCK_REVEAL_MS);
 }
 
 function undockPanel() {
@@ -1231,34 +1307,8 @@ function undockPanel() {
   schedulePanelPositionSave();
 }
 
-ipcMain.on('panel:hover', (evt, inside) => {
-  if (!panel || panel.isDestroyed()) return;
-  if (evt.sender !== panel.webContents) return;
-  if (!panelDock || !panelDock.docked) return;
-  if (inside) {
-    clearTimeout(dockHideTimer);
-    dockHideTimer = null;
-    if (!panelDock.revealed) scheduleReveal();
-    return;
-  }
-  // 离开事件只用于「提前」收起：以光标真实位置为准，避免打字/窗口滑动时的误报把面板收走
-  const pt = screen.getCursorScreenPoint();
-  const pb = panel.getBounds();
-  const inPanel = pt.x >= pb.x && pt.x <= pb.x + pb.width &&
-    pt.y >= pb.y && pt.y <= pb.y + pb.height;
-  if (!panelDock.revealed) {
-    if (!inPanel) {
-      const wa = workAreaForPoint(pt);
-      const inStrip = pt.x >= pb.x && pt.x <= pb.x + pb.width &&
-        pt.y >= wa.top - 2 && pt.y <= wa.top + DOCK_STRIP + 2;
-      if (!inStrip) {
-        clearTimeout(dockRevealTimer);
-        dockRevealTimer = null;
-      }
-    }
-    return;
-  }
-  if (!inPanel && !panelAnimating) scheduleTuck();
+ipcMain.on('panel:hover', (evt) => {
+  if (panel && !panel.isDestroyed() && evt.sender === panel.webContents) pollDockCursor();
 });
 
 function showPanel(focus) {
@@ -1272,8 +1322,6 @@ function showPanel(focus) {
   else if (!panel.isVisible()) panel.showInactive();
 
   positionPanelFromSettings();
-  if (panelDock && panelDock.docked) startDockPoll();
-
   panel.setSkipTaskbar(true);
 
   sendPanelState();
@@ -1288,6 +1336,7 @@ function hidePanel() {
 
   // 收起只是隐藏，进程仍在托盘；不进任务栏
 
+  resetPanelDock();
   if (panel.isVisible()) panel.hide();
 
   sendPanelState();
@@ -1394,15 +1443,23 @@ function rebuildTrayMenu() {
 
   if (!tray) return;
 
+  const panelOpen = panel && !panel.isDestroyed() && panel.isVisible()
+    && (!panelDock || panelDock.revealed);
   const menu = Menu.buildFromTemplate([
 
     {
 
-      label: '打开/收起面板',
-
-      click: () => togglePanel(),
-
+      label: panelOpen ? '收起面板' : '打开面板',
+      click: () => {
+        if (panelOpen) hidePanel();
+        else showPanel(true);
+      },
     },
+    {
+      label: '回顾…',
+      click: () => openReviewWindow(),
+    },
+    { type: 'separator' },
 
 
     {
@@ -1429,10 +1486,6 @@ function rebuildTrayMenu() {
 
     },
 
-    {
-      label: '回顾…',
-      click: () => openReviewWindow(),
-    },
     {
       label: '设置…',
       click: () => openSettingsWindow(),
@@ -1709,16 +1762,19 @@ function sanitizeDay(raw) {
 }
 
 /** 读一个月分片：不存在返回空月；损坏则备份 .bak 后按空月重建 */
-function loadMonth(m) {
+function loadMonth(m, { migrating = false } = {}) {
   if (monthCache.has(m)) return monthCache.get(m);
   const data = { month: m, days: {} };
-  monthCache.set(m, data);
   ensureMonthsDir();
   let text = null;
   try {
     text = fs.readFileSync(monthFilePath(m), 'utf8');
   } catch (err) {
-    if (err && err.code !== 'ENOENT') console.error('[workboard] 月分片读取失败：', err);
+    if (err && err.code !== 'ENOENT') {
+      if (migrating) throw err;
+      console.error('[workboard] 月分片读取失败：', err);
+    }
+    monthCache.set(m, data);
     return data;
   }
   try {
@@ -1730,14 +1786,16 @@ function loadMonth(m) {
       }
     }
   } catch (err) {
+    if (migrating) throw err;
     console.error('[workboard] 月分片损坏，备份后重建：', err);
     try { fs.renameSync(monthFilePath(m), monthFilePath(m) + '.bak'); } catch (e) { /* ignore */ }
   }
+  monthCache.set(m, data);
   return data;
 }
 
 /** 原子写一个月分片 */
-function writeMonth(m) {
+function writeMonth(m, { atomicOnly = false } = {}) {
   const data = monthCache.get(m);
   if (!data) return;
   ensureMonthsDir();
@@ -1747,6 +1805,10 @@ function writeMonth(m) {
     fs.writeFileSync(file + '.tmp', text, 'utf8');
     fs.renameSync(file + '.tmp', file);
   } catch (err) {
+    if (atomicOnly) {
+      monthCache.delete(m);
+      throw err;
+    }
     console.error('[workboard] 月分片原子写失败，降级直写：', err);
     try {
       fs.writeFileSync(file, text, 'utf8');
@@ -1761,29 +1823,26 @@ function writeMonth(m) {
 /** 读某天（面板只加载当天） */
 function readDay(dateKey) {
   if (!validDateKey(dateKey)) return { plans: [], dones: [] };
-  const day = loadMonth(monthOf(dateKey)).days[dateKey];
+  const day = loadMonth(monthOf(dateKey)).days[dateKey] ?? board.days[dateKey];
   return day ? { plans: day.plans.slice(), dones: day.dones.slice() } : { plans: [], dones: [] };
 }
 
 /** 写某天：只落盘所在月份分片 */
-function writeDay(dateKey, rawDay) {
+function writeDay(dateKey, rawDay, options) {
   const m = monthOf(dateKey);
   const data = loadMonth(m);
   data.days[dateKey] = sanitizeDay(rawDay);
-  writeMonth(m);
+  writeMonth(m, options);
   return data.days[dateKey];
 }
 
 /** 迁移前留一份旧文件副本，便于回滚（只保留最早一份） */
 function backupLegacyFileOnce() {
   const bak = path.join(DATA_DIR, 'workboard.v1.bak');
-  if (fs.existsSync(bak) || !fs.existsSync(DATA_FILE)) return;
-  try {
-    fs.copyFileSync(DATA_FILE, bak);
-    bootLog(`v1 backup created: ${bak}`);
-  } catch (err) {
-    bootLog(`v1 backup failed: ${err && err.message}`);
-  }
+  if (fs.existsSync(bak)) return;
+  fs.copyFileSync(DATA_FILE, bak + '.tmp');
+  fs.renameSync(bak + '.tmp', bak);
+  bootLog(`v1 backup created: ${bak}`);
 }
 
 /** v1 → v2：把旧单文件的天按月份拆分（已有月分片中的同一天优先保留，不覆盖） */
@@ -1798,48 +1857,130 @@ function migrateLegacyDays(days) {
     grouped.get(m).push(key);
   }
   for (const [m, keys] of grouped) {
-    const data = loadMonth(m);
+    monthCache.delete(m);
+    const data = loadMonth(m, { migrating: true });
     let changed = false;
     for (const key of keys) {
       if (data.days[key]) continue;
       data.days[key] = sanitizeDay(days[key]);
       changed = true;
     }
-    if (changed) writeMonth(m);
+    if (changed) writeMonth(m, { atomicOnly: true });
   }
 }
 
-/** 覆盖 from..to 的月份键（含首尾） */
-function monthKeysBetween(from, to) {
-  const out = [];
-  if (!validDateKey(from) || !validDateKey(to)) return out;
-  let y = Number(from.slice(0, 4));
-  let mo = Number(from.slice(5, 7));
-  const end = Number(to.slice(0, 4)) * 12 + Number(to.slice(5, 7));
-  while (y * 12 + mo <= end) {
-    out.push(`${y}-${String(mo).padStart(2, '0')}`);
-    mo += 1;
-    if (mo > 12) { mo = 1; y += 1; }
-  }
-  return out;
+function readMonthDays(month) {
+  const { days } = loadMonth(month);
+  const legacyDays = Object.entries(board.days).filter(([key]) => monthOf(key) === month);
+  return legacyDays.length ? { ...Object.fromEntries(legacyDays), ...days } : days;
 }
 
-/** 历史查询：按范围 + 关键字（空关键字返回全部有记录的天） */
-function queryHistory(from, to, keyword) {
-  const kw = isStr(keyword) ? keyword.trim().toLowerCase() : '';
-  const out = [];
-  for (const m of monthKeysBetween(from, to)) {
-    const data = loadMonth(m);
-    for (const key of Object.keys(data.days).sort()) {
-      if (key < from || key > to) continue;
-      const day = data.days[key];
-      const plans = kw ? day.plans.filter((p) => p.text.toLowerCase().includes(kw)) : day.plans;
-      const dones = kw ? day.dones.filter((d) => d.text.toLowerCase().includes(kw)) : day.dones;
-      if (kw && plans.length === 0 && dones.length === 0) continue;
-      out.push({ dateKey: key, plans, dones });
+function* storedDays() {
+  ensureMonthsDir();
+  const months = new Set(Object.keys(board.days).map(monthOf));
+  for (const file of fs.readdirSync(MONTHS_DIR)) {
+    const month = file.slice(0, -5);
+    if (file.endsWith('.json') && validMonth(month)) months.add(month);
+  }
+  for (const month of [...months].sort()) {
+    yield* Object.entries(readMonthDays(month));
+  }
+}
+
+function panelData(dateKey = todayKeyMain()) {
+  const plans = [];
+  const dones = [];
+  for (const [originDateKey, day] of storedDays()) {
+    if (originDateKey <= dateKey) {
+      for (const plan of day.plans) plans.push({ ...plan, originDateKey });
+    }
+    for (const done of day.dones) {
+      if ((done.completedDateKey || originDateKey) === dateKey) dones.push({ ...done, originDateKey });
     }
   }
-  return out;
+  // 跨日完成会保存在原日分片，按实际完成时间展示。
+  dones.sort((a, b) => a.completedAt.localeCompare(b.completedAt));
+  return { settings: board.settings, dateKey, day: { plans, dones } };
+}
+
+/** 更新一条事项；完成和撤销均在原日分片内一次原子落盘。 */
+function changeTask(change) {
+  if (!isObj(change) || !isStr(change.id) || !change.id) throw new Error('无效事项');
+  const now = new Date();
+  const today = todayKeyMain(now);
+  const { action, id } = change;
+  const adding = action === 'add-plan' || action === 'add-done';
+  const origin = adding ? today : change.originDateKey;
+  if (!validDateKey(origin) || !validMonth(monthOf(origin))) throw new Error('无效的事项日期');
+  const pad = (n) => String(n).padStart(2, '0');
+  const offset = -now.getTimezoneOffset();
+  const zone = (offset < 0 ? '-' : '+') + pad(Math.floor(Math.abs(offset) / 60)) + ':' + pad(Math.abs(offset) % 60);
+  const timestamp = `${today}T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${zone}`;
+
+  const month = monthOf(origin);
+  monthCache.delete(month);
+  loadMonth(month, { migrating: true });
+  const day = readDay(origin);
+  if (adding) {
+    if (!isStr(change.text) || !change.text.trim()) throw new Error('请输入事项');
+    if (day.plans.some((plan) => plan.id === id) || day.dones.some((done) => done.id === id)) {
+      return panelData(today); // 同一条添加请求重试时只保留一条
+    }
+    const record = { id, time: change.time, text: change.text };
+    if (action === 'add-plan') day.plans.push({ ...record, createdAt: timestamp });
+    else day.dones.push({ ...record, source: 'manual', completedAt: timestamp });
+  } else {
+    const rows = action === 'undo' || action === 'delete-done' ? day.dones : day.plans;
+    const index = rows.findIndex((record) => record.id === id);
+    if (index < 0) return panelData(today); // 外部已删除，或动作已经提交
+    const record = rows[index];
+    switch (action) {
+      case 'edit-plan':
+        if (!isStr(change.text) || !change.text.trim()) throw new Error('请输入事项');
+        rows[index] = { ...record, time: change.time, text: change.text };
+        break;
+      case 'complete':
+        rows.splice(index, 1);
+        day.dones.push({ ...record, source: 'from-plan', completedAt: timestamp, completedDateKey: today });
+        break;
+      case 'undo':
+        rows.splice(index, 1);
+        day.plans.push({ id, time: record.time, text: record.text, createdAt: record.createdAt || record.completedAt });
+        break;
+      case 'delete-plan':
+      case 'delete-done':
+        rows.splice(index, 1);
+        break;
+      default:
+        throw new Error('无效的事项操作');
+    }
+  }
+  writeDay(origin, day, { atomicOnly: true });
+  broadcastReview(month);
+  return panelData(today);
+}
+
+/** 按实际完成日期归档；回顾和导出只取已办。 */
+function queryHistory(from, to, keyword, completedOnly) {
+  const kw = isStr(keyword) ? keyword.trim().toLowerCase() : '';
+  const result = new Map();
+  const inRange = (key) => key >= from && key <= to;
+  const matches = (record) => !kw || record.text.toLowerCase().includes(kw);
+  const bucket = (dateKey) => {
+    if (!result.has(dateKey)) result.set(dateKey, { dateKey, plans: [], dones: [] });
+    return result.get(dateKey);
+  };
+  for (const [origin, day] of storedDays()) {
+    if (!completedOnly && inRange(origin)) {
+      if (!kw) bucket(origin);
+      for (const plan of day.plans) if (matches(plan)) bucket(origin).plans.push(plan);
+    }
+    for (const done of day.dones) {
+      const dateKey = done.completedDateKey || origin;
+      if (inRange(dateKey) && matches(done)) bucket(dateKey).dones.push(done);
+    }
+  }
+  return [...result.values()].sort((a, b) => a.dateKey.localeCompare(b.dateKey));
 }
 
 function exportTimeValue(t) {
@@ -1886,14 +2027,11 @@ function scheduleMonthReload(m) {
     try {
       text = fs.readFileSync(monthFilePath(m), 'utf8');
     } catch (err) {
-      return;
+      if (err.code !== 'ENOENT') return;
     }
     if (monthOwnWrite.get(m) === text) return; // 自身写入，忽略
     monthCache.delete(m);
-    const tk = todayKeyMain();
-    if (monthOf(tk) === m) {
-      broadcastData({ dateKey: tk, day: readDay(tk) });
-    }
+    broadcastData(panelData());
     broadcastReview(m);
   }, RELOAD_DEBOUNCE_MS);
 }
@@ -1956,9 +2094,18 @@ function openReviewWindow() {
 
 function registerIpc() {
 
-  ipcMain.handle('data:load', () => {
-    const tk = todayKeyMain();
-    return { settings: board.settings, dateKey: tk, day: readDay(tk) };
+  ipcMain.handle('data:load', () => panelData());
+
+  ipcMain.handle('task:change', (event, change) => {
+    if (Object.keys(board.days).length > 0) {
+      return { ok: false, error: '旧记录迁移未完成，请重启后重试' };
+    }
+    try {
+      return { ok: true, ...changeTask(change) };
+    } catch (err) {
+      console.error('[workboard] task:change 失败：', err);
+      return { ok: false, error: '事项保存失败，请重试' };
+    }
   });
 
 
@@ -1973,6 +2120,9 @@ function registerIpc() {
 
       }
 
+      if (Object.keys(board.days).length > 0) {
+        return { ok: false, error: '旧记录迁移未完成，请重启后重试' };
+      }
       writeDay(payload.dateKey, { plans: payload.plans, dones: payload.dones });
 
       broadcastReview(monthOf(payload.dateKey));
@@ -2045,7 +2195,7 @@ function registerIpc() {
 
   ipcMain.handle('month:load', (event, month) => {
     if (!validMonth(month)) return { ok: false, error: 'invalid month' };
-    return { ok: true, month, days: loadMonth(month).days };
+    return { ok: true, month, days: readMonthDays(month) };
   });
 
   ipcMain.handle('history:query', (event, query) => {
@@ -2053,7 +2203,7 @@ function registerIpc() {
     if (!validDateKey(q.from) || !validDateKey(q.to) || q.from > q.to) {
       return { ok: false, error: 'invalid range' };
     }
-    return { ok: true, days: queryHistory(q.from, q.to, q.keyword) };
+    return { ok: true, days: queryHistory(q.from, q.to, q.keyword, q.completedOnly === true) };
   });
 
   ipcMain.handle('history:export', async (event, query) => {
@@ -2063,7 +2213,7 @@ function registerIpc() {
         return { ok: false, error: 'invalid range' };
       }
       const format = q.format === 'csv' ? 'csv' : 'md';
-      const days = queryHistory(q.from, q.to, q.keyword);
+      const days = queryHistory(q.from, q.to, q.keyword, q.completedOnly === true);
       const text = buildExportText(days, format);
       const owner = event && event.sender ? BrowserWindow.fromWebContents(event.sender) : null;
       const opts = {
@@ -2132,6 +2282,10 @@ if (!gotLock) {
 } else {
 
   app.on('second-instance', (event, argv) => {
+    if (Array.isArray(argv) && argv.includes('--open-review')) {
+      openReviewWindow();
+      return;
+    }
     // 托盘「设置…」是用 --open-settings 唤起已运行实例
     if (Array.isArray(argv) && argv.includes('--open-settings')) {
       openSettingsWindow();
@@ -2170,6 +2324,7 @@ if (!gotLock) {
 
 
     createPanel();
+    if (process.argv.includes('--open-review')) openReviewWindow();
     // 首个实例带 --open-settings（托盘「设置…」且应用未运行）时直接打开设置窗口
     if (process.argv.includes('--open-settings')) openSettingsWindow();
 

@@ -113,7 +113,7 @@ async function main() {
   check('S2 根文件仍不含 days', !('days' in readRoot()));
   check('S2 月分片原子写无残留 tmp', !fs.existsSync(monthPath(month) + '.tmp'));
 
-  /* 3. data:load 只返回当天 + 设置（面板不再整库加载） */
+  /* 3. data:load 返回面板所需数据（无整库） */
   const load1 = await handlers.get('data:load')({});
   check('S3 data:load 返回当天明细', load1.dateKey === keyOf(new Date()) && load1.day && load1.day.plans.length === 1);
   check('S3 data:load 不返回整库', !('board' in load1) && !('days' in load1));
@@ -173,6 +173,46 @@ async function main() {
   check('S8 面板位置落盘（panelPosition）',
     !!j4.settings.panelPosition && j4.settings.panelPosition.x === 300 && j4.settings.panelPosition.y === 240,
     JSON.stringify(j4.settings.panelPosition));
+  panel.setBounds({ x: 300, y: 240, width: 390, height: 588 });
+  (panel.handlers.resize || []).forEach((fn) => fn());
+  await sleep(50);
+  const resized = panel.getBounds();
+  check('S8 系统调整尺寸后恢复 360×560 且位置不变',
+    resized.x === 300 && resized.y === 240 && resized.width === 360 && resized.height === 560, JSON.stringify(resized));
+
+  let dockCursor = { x: 0, y: 400 };
+  electron.screen.getCursorScreenPoint = () => dockCursor;
+  const nearestDisplay = electron.screen.getDisplayNearestPoint;
+  const dockTop = 40;
+  electron.screen.getDisplayNearestPoint = () => ({ workArea: { ...wa, y: dockTop } });
+  await handlers.get('panel:show')({});
+  // 窗口刚打开时，模拟用户在程序定位的保护期内拖到顶部并松开。
+  panel.setPosition(300, dockTop + 10);
+  (panel.handlers.move || []).forEach((fn) => fn());
+  await sleep(1100);
+  const strip = electron.__fakeApi.FakeBrowserWindow.all.find((win) => win !== panel && win.isVisible());
+  check('S8 打开后立即拖到顶部仍会收起，并且面板底部完全隐藏',
+    !panel.isVisible() && !!strip);
+  if (strip) {
+    check('S8 细条位于工作区顶部且不获取焦点', strip.getBounds().y === dockTop && strip.opts.focusable === false);
+    // 模拟原生移动 API 跨越工作区边界时让窗口尺寸漂移。
+    const moveOnly = panel.setPosition.bind(panel);
+    panel.setPosition = (x, y) => {
+      moveOnly(x, y);
+      panel.setBounds({ width: 390, height: 588 });
+    };
+    dockCursor = { x: 480, y: dockTop + 2 };
+    await sleep(800);
+    const revealed = panel.getBounds();
+    check('S8 悬停滑出保持 360×560', panel.isVisible() && revealed.y === dockTop &&
+      revealed.width === 360 && revealed.height === 560 && !strip.isVisible(), JSON.stringify(revealed));
+    dockCursor = { x: 0, y: 400 };
+    await sleep(1250);
+    check('S8 离开后仍只保留细条', !panel.isVisible() && strip.isVisible());
+    panel.setPosition = moveOnly;
+  }
+  electron.screen.getDisplayNearestPoint = nearestDisplay;
+  await handlers.get('panel:show')({});
 
   /* 9. 跨零点 / 跨月：昨日桶完好、互不污染 */
   const yd = new Date(now.getTime() - 24 * 3600 * 1000);
@@ -249,11 +289,69 @@ async function main() {
     check('S13 CSV 带 BOM 与表头', csv.charCodeAt(0) === 0xFEFF && csv.includes('日期,类型,时间段,内容'));
   }
 
+  /* 跨月待办保留原日，完成和回顾按完成日显示。 */
+  const origin = keyOf(new Date(now.getFullYear(), now.getMonth() - 1, 15));
+  const carried = { id: 'carried', time: '9:00', text: '跨月未完成事项', createdAt: origin + 'T09:00:00' };
+  await handlers.get('day:save')({}, { dateKey: origin, plans: [carried], dones: [
+    { id: 'past-done', time: '9:00', text: '以前的已办', source: 'manual', completedAt: origin + 'T10:00:00' },
+  ] });
+  const panelData = await handlers.get('data:load')({});
+  check('跨月未完成待办仍可查看且保留原日', panelData.day.plans.some((p) => p.id === carried.id && p.originDateKey === origin));
+  check('主面板不显示旧已办', !panelData.day.dones.some((d) => d.id === 'past-done'));
+  const changeTask = (action, data = {}) => handlers.get('task:change')({}, {
+    action, id: carried.id, originDateKey: origin, ...data,
+  });
+  const edited = await changeTask('edit-plan', { text: '跨月待办已编辑', time: '10:30' });
+  check('编辑跨月待办写回最初分片', edited.ok && readMonth(origin.slice(0, 7)).days[origin].plans[0].text === '跨月待办已编辑');
+  const migratedMonth = monthPath(origin.slice(0, 7));
+  const before = fs.readFileSync(migratedMonth, 'utf8');
+  const renameForTask = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (to === migratedMonth) throw new Error('模拟任务分片写入失败');
+    return renameForTask(from, to);
+  };
+  try {
+    const failed = await changeTask('complete');
+    check('事项完成失败时原文件保持完整', !failed.ok && fs.readFileSync(migratedMonth, 'utf8') === before);
+    check('事项完成失败时仍在待办', (await handlers.get('data:load')({})).day.plans.some((p) => p.id === carried.id));
+  } finally {
+    fs.renameSync = renameForTask;
+  }
+  const completed = await changeTask('complete');
+  check('勾选移除待办并加入完成当天', completed.ok && !completed.day.plans.some((p) => p.id === carried.id)
+    && completed.day.dones.some((d) => d.id === carried.id && d.completedDateKey === key));
+  const repeated = await changeTask('complete');
+  check('重复完成不会产生第二条已办', repeated.day.dones.filter((d) => d.id === carried.id).length === 1);
+  const RealDate = Date;
+  const nextDay = new RealDate(now.getFullYear(), now.getMonth(), now.getDate() + 1, 12);
+  global.Date = class extends RealDate {
+    constructor(...args) { super(...(args.length ? args : [nextDay.getTime()])); }
+  };
+  try {
+    const next = await handlers.get('data:load')({});
+    check('次日已办归零且剩余待办仍在', next.dateKey === keyOf(nextDay) && next.day.dones.length === 0
+      && next.day.plans.some((p) => p.originDateKey === key));
+  } finally {
+    global.Date = RealDate;
+  }
+  const completedQuery = (from, to, keyword) => handlers.get('history:query')({}, { from, to, keyword, completedOnly: true });
+  const past = await completedQuery(origin, origin, '跨月');
+  const completionDate = await completedQuery(key, key, '跨月');
+  check('回顾只在完成日显示跨月完成项', past.days.length === 0 && completionDate.days[0]?.dones[0]?.id === carried.id);
+  const undone = await changeTask('undo');
+  check('撤销恢复原日及添加时间', undone.ok && undone.day.plans.some((p) => p.id === carried.id &&
+    p.originDateKey === origin && p.createdAt === carried.createdAt)
+    && !undone.day.dones.some((d) => d.id === carried.id));
+  check('回顾搜索排除所有待办', (await completedQuery(origin, key, '跨月')).days.length === 0);
+  const onlyDoneExport = await handlers.get('history:export')({}, { from: origin, to: key, format: 'csv', completedOnly: true });
+  check('回顾导出只包含已办', onlyDoneExport.ok && !fs.readFileSync(onlyDoneExport.path, 'utf8').includes('"待办"'));
+  await changeTask('delete-plan');
+
   /* 14. v1 → v2 自动迁移：旧单文件 days 拆到月分片，根文件清空 days */
   const legacyA = '2025-01-15';
   const legacyB = '2025-02-20';
   const settingsBefore = readRoot().settings;
-  fs.writeFileSync(DATA_FILE, JSON.stringify({
+  const legacyText = JSON.stringify({
     schemaVersion: 1,
     app: 'desktop-planner',
     days: {
@@ -261,7 +359,29 @@ async function main() {
       [legacyB]: { plans: [], dones: [{ id: 'd-l1', time: '15:00', text: '旧已办B', source: 'manual', completedAt: '' }] },
     },
     settings: settingsBefore,
-  }, null, 2) + '\n', 'utf8');
+  }, null, 2) + '\n';
+  const rename = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (to === monthPath('2025-02')) throw new Error('模拟第二个月份迁移写入失败');
+    return rename(from, to);
+  };
+  try {
+    fs.writeFileSync(DATA_FILE, legacyText, 'utf8');
+    await sleep(900);
+    check('S14 月分片写入失败后完整保留 v1 根文件', fs.readFileSync(DATA_FILE, 'utf8') === legacyText);
+    const backup = fs.readFileSync(path.join(DATA_DIR, 'workboard.v1.bak'), 'utf8');
+    check('S14 迁移前备份完整旧数据', backup === legacyText);
+    const pending = await handlers.get('month:load')({}, '2025-02');
+    check('S14 尚未成功迁移的旧记录仍可读取', pending.days[legacyB]?.dones[0]?.text === '旧已办B');
+    const pendingSave = await handlers.get('day:save')({}, { dateKey: legacyB, plans: [], dones: [] });
+    check('S14 迁移失败时阻止明细写入', pendingSave.ok === false);
+    await handlers.get('settings:set')({}, { theme: 'light' });
+    await sleep(450);
+    check('S14 设置保存也不会覆盖旧文件', fs.readFileSync(DATA_FILE, 'utf8') === legacyText);
+  } finally {
+    fs.renameSync = rename;
+  }
+  fs.writeFileSync(DATA_FILE, legacyText, 'utf8');
   await sleep(900);
   const root14 = readRoot();
   check('S14 迁移后 schemaVersion=2', root14.schemaVersion === 2);

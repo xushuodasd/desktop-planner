@@ -12,8 +12,8 @@
   <main class="review-page">
     <header class="review-bar">
       <div class="review-nav">
-        <button type="button" class="rv-btn" id="prevBtn" title="上一段">‹</button>
-        <button type="button" class="rv-btn" id="nextBtn" title="下一段">›</button>
+        <button type="button" class="rv-btn" id="prevBtn" aria-label="上一段" title="上一段">‹</button>
+        <button type="button" class="rv-btn" id="nextBtn" aria-label="下一段" title="下一段">›</button>
         <button type="button" class="rv-btn" id="todayBtn" title="回到今天">今天</button>
       </div>
 
@@ -24,7 +24,7 @@
       </div>
 
       <div class="review-actions">
-        <input type="search" id="searchInput" class="input rv-search" placeholder="搜索记录…" maxlength="40" />
+        <input type="search" id="searchInput" class="input rv-search" aria-label="搜索已办" placeholder="搜索已办…" maxlength="40" />
         <select id="formatSelect" class="select" title="导出格式">
           <option value="md">Markdown</option>
           <option value="csv">CSV</option>
@@ -39,7 +39,7 @@
     </div>
 
     <div class="review-scroll" id="reviewScroll">
-      <div class="rv-empty" id="emptyState" hidden>这段时间还没有记录</div>
+      <div class="rv-empty" id="emptyState" hidden>这段时间还没有已办</div>
       <div class="rv-days" id="dayList"></div>
     </div>
   </main>

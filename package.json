@@ -1,7 +1,7 @@
 {
   "name": "desktop-planner",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.7",
   "description": "桌面悬浮工作计划板（构建入口）",
   "author": "desktop-planner",
   "license": "MIT",

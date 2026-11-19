@@ -1,5 +1,5 @@
 ﻿# Desktop Planner — WinForms tray host (Win11 Electron.Tray fallback)
-# Left click: raise panel (second-instance). Right: open / settings / quit.
+# Left click: raise panel. Right: panel / review / settings / quit.
 param(
   [Parameter(Mandatory = $true)][string]$RootDir,
   [Parameter(Mandatory = $true)][string]$ExePath,
@@ -37,7 +37,7 @@ Add-Type -AssemblyName System.Drawing
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-function Invoke-OpenPanel([switch]$OpenSettings) {
+function Invoke-DesktopPlanner([string]$ViewArgument) {
   $ud = if ([string]::IsNullOrWhiteSpace($AppDir)) {
     Join-Path $env:APPDATA 'desktop-planner\appdata'
   } else {
@@ -46,7 +46,7 @@ function Invoke-OpenPanel([switch]$OpenSettings) {
   if (-not (Test-Path $ud)) { New-Item -ItemType Directory -Path $ud -Force | Out-Null }
   $appArgs = @('--no-sandbox', "--user-data-dir=$ud")
   if (-not [string]::IsNullOrWhiteSpace($AppDir)) { $appArgs += ('"' + $AppDir + '"') }
-  if ($OpenSettings) { $appArgs += '--open-settings' }
+  if ($ViewArgument) { $appArgs += $ViewArgument }
   Start-Process -FilePath $ExePath -ArgumentList $appArgs -WorkingDirectory $RootDir | Out-Null
 }
 
@@ -70,10 +70,14 @@ try {
 if (-not $icon) { $icon = [System.Drawing.SystemIcons]::Application }
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$itemOpen = $menu.Items.Add('打开/收起面板')
-$itemOpen.add_Click({ Invoke-OpenPanel })
+$itemOpen = $menu.Items.Add('打开面板')
+$itemOpen.add_Click({ Invoke-DesktopPlanner })
+$itemReview = $menu.Items.Add('回顾…')
+$itemReview.add_Click({ Invoke-DesktopPlanner '--open-review' })
+$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 $itemSettings = $menu.Items.Add('设置…')
-$itemSettings.add_Click({ Invoke-OpenPanel -OpenSettings })
+$itemSettings.add_Click({ Invoke-DesktopPlanner '--open-settings' })
+$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 $itemQuit = $menu.Items.Add('退出')
 $itemQuit.add_Click({ Invoke-QuitApp })
 
@@ -85,7 +89,7 @@ $script:notify.ContextMenuStrip = $menu
 $script:notify.add_MouseUp({
   param($sender, $e)
   if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-    Invoke-OpenPanel
+    Invoke-DesktopPlanner
   }
 })
 

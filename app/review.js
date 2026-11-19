@@ -120,14 +120,11 @@ function appendHighlighted(parent, text, kw) {
 
 function renderRows(day) {
   const kw = state.keyword.toLowerCase();
-  const rows = [
-    ...day.plans.map((p) => ({ time: p.time, text: p.text, type: 'plan' })),
-    ...day.dones.map((d) => ({ time: d.time, text: d.text, type: 'done' })),
-  ].map((r, i) => ({ ...r, i }))
-    .sort((a, b) => timeStart(a.time) - timeStart(b.time) || a.i - b.i);
+  const rows = day.dones.slice().sort((a, b) => timeStart(a.time) - timeStart(b.time));
 
   const ul = document.createElement('ul');
   ul.className = 'rv-rows';
+  if (rows.some((row) => row.time.length > 5)) ul.classList.add('has-time-ranges');
   for (const row of rows) {
     const li = document.createElement('li');
     li.className = 'rv-row';
@@ -136,15 +133,11 @@ function renderRows(day) {
     time.className = 'rv-time' + (row.time ? '' : ' blank');
     time.textContent = row.time || '—';
 
-    const tag = document.createElement('span');
-    tag.className = 'rv-tag ' + (row.type === 'done' ? 'is-done' : 'is-plan');
-    tag.textContent = row.type === 'done' ? '已办' : '待办';
-
     const text = document.createElement('span');
     text.className = 'rv-text';
     appendHighlighted(text, row.text, kw);
 
-    li.append(time, tag, text);
+    li.append(time, text);
     ul.appendChild(li);
   }
   return ul;
@@ -154,6 +147,10 @@ function renderDay(day) {
   const d = new Date(Number(day.dateKey.slice(0, 4)), Number(day.dateKey.slice(5, 7)) - 1, Number(day.dateKey.slice(8, 10)));
   const block = document.createElement('section');
   block.className = 'rv-day';
+  if (state.mode === 'day') {
+    block.appendChild(renderRows(day));
+    return block;
+  }
 
   const head = document.createElement('div');
   head.className = 'rv-day-head';
@@ -164,7 +161,7 @@ function renderDay(day) {
 
   const stats = document.createElement('span');
   stats.className = 'rv-day-stats';
-  stats.textContent = soup(`完成 ${day.dones.length} 件`, `待办 ${day.plans.length} 条`);
+  stats.textContent = `完成 ${day.dones.length} 件`;
 
   head.append(date, stats);
   block.append(head, renderRows(day));
@@ -175,16 +172,11 @@ function render() {
   const { from, to } = rangeOf();
   el('rangeTitle').textContent = rangeLabel(from, to);
 
-  let doneCount = 0;
-  let planCount = 0;
-  for (const d of state.days) {
-    doneCount += d.dones.length;
-    planCount += d.plans.length;
-  }
+  const doneCount = state.days.reduce((count, day) => count + day.dones.length, 0);
   const lead = state.keyword
-    ? `“${state.keyword}” 命中 ${state.days.length} 天`
-    : `${state.days.length} 天有记录`;
-  el('rangeSummary').textContent = soup(lead, `完成 ${doneCount} 件`, `待办 ${planCount} 条`);
+    ? (state.mode === 'day' ? `搜索“${state.keyword}”` : `“${state.keyword}” 命中 ${state.days.length} 天`)
+    : (state.mode === 'day' ? '' : `${state.days.length} 天有记录`);
+  el('rangeSummary').textContent = soup(lead, `完成 ${doneCount} 件`);
 
   const list = el('dayList');
   list.textContent = '';
@@ -192,7 +184,7 @@ function render() {
 
   const empty = el('emptyState');
   empty.hidden = state.days.length > 0;
-  empty.textContent = state.keyword ? '没有匹配的记录' : '这段时间还没有记录';
+  empty.textContent = state.keyword ? '没有匹配的已办' : '这段时间还没有已办';
 
   document.querySelectorAll('.rv-mode').forEach((btn) => {
     const active = btn.dataset.mode === state.mode;
@@ -207,7 +199,7 @@ async function load() {
   const seq = loadSeq + 1;
   loadSeq = seq;
   try {
-    const r = await api.historyQuery({ from: keyOf(from), to: keyOf(to), keyword: state.keyword });
+    const r = await api.historyQuery({ from: keyOf(from), to: keyOf(to), keyword: state.keyword, completedOnly: true });
     if (seq !== loadSeq) return;
     state.days = (r && r.ok && Array.isArray(r.days)) ? r.days : [];
     if (!r || !r.ok) showToast('回顾数据加载失败');
@@ -242,6 +234,7 @@ async function exportRange() {
       from: keyOf(from),
       to: keyOf(to),
       keyword: state.keyword,
+      completedOnly: true,
       format: el('formatSelect').value,
     });
     if (r && r.ok && r.canceled) showToast('已取消导出');

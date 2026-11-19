@@ -58,6 +58,7 @@ class FakeBrowserWindow {
   setResizable() {}
   setSkipTaskbar() {}
   setAlwaysOnTop() {}
+  setIgnoreMouseEvents(ignore) { this.ignoresMouse = ignore; }
   setBackgroundMaterial() {}
   isDestroyed() { return false; }
 }

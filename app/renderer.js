@@ -16,12 +16,11 @@ const state = {
   timeText: '', // 时间滚轮当前值（如 '9:30'）
 };
 
-let saveTimer = null;
 let idCounter = 0;
 let toastTimer = null;
 let editingPlanId = null;
 let lastAddedId = null;
-let pendingDelete = null; // { kind, id }：等待二次确认的删除
+let pendingDelete = null; // { kind, record }：等待二次确认的删除
 let pendingDeleteTimer = null;
 let switching = false;
 
@@ -30,17 +29,6 @@ function todayKey() {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}-${m}-${day}`;
-}
-
-function localIsoNow() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  const off = -d.getTimezoneOffset();
-  const sign = off >= 0 ? '+' : '-';
-  const oh = pad(Math.floor(Math.abs(off) / 60));
-  const om = pad(Math.abs(off) % 60);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${sign}${oh}:${om}`;
 }
 
 function uid(kind) {
@@ -77,6 +65,7 @@ function showToast(text) {
 /* ---------- 时间滚轮（时 / 分，滑动选择） ---------- */
 
 const TIME_ITEM_H = 34;
+const WHEEL_DRAG_THRESHOLD = 4;
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const MINUTES = Array.from({ length: 12 }, (_, i) => i * 5);
 
@@ -132,6 +121,51 @@ function markWheel(wheel) {
   return idx;
 }
 
+function bindWheelDrag(wheel, sync) {
+  let press = null;
+
+  wheel.addEventListener('pointerdown', (event) => {
+    if (event.pointerType !== 'mouse' || event.button !== 0 || press) return;
+    event.preventDefault();
+    const item = event.target.closest('.wheel-item');
+    press = {
+      id: event.pointerId,
+      y: event.clientY,
+      scrollTop: wheel.scrollTop,
+      itemIndex: item ? [...wheel.children].indexOf(item) - 1 : null,
+      dragging: false,
+    };
+    wheel.setPointerCapture(event.pointerId);
+  });
+
+  wheel.addEventListener('pointermove', (event) => {
+    if (press?.id !== event.pointerId) return;
+    const delta = press.y - event.clientY;
+    if (!press.dragging) {
+      if (Math.abs(delta) < WHEEL_DRAG_THRESHOLD) return;
+      press.dragging = true;
+      wheel.classList.add('is-dragging');
+    }
+    wheel.scrollTop = press.scrollTop + delta;
+  });
+
+  const finish = (event) => {
+    if (press?.id !== event.pointerId) return;
+    if (press.dragging) {
+      wheel.scrollTop = wheelIndex(wheel) * TIME_ITEM_H;
+      wheel.classList.remove('is-dragging');
+      sync();
+    } else if (event.type === 'pointerup' && press.itemIndex !== null) {
+      wheel.scrollTop = press.itemIndex * TIME_ITEM_H;
+      sync();
+    }
+    press = null;
+  };
+  wheel.addEventListener('pointerup', finish);
+  wheel.addEventListener('pointercancel', finish);
+  wheel.addEventListener('lostpointercapture', finish);
+}
+
 /** 在 host 内挂一套「小时 : 分钟」滚轮；返回控制器（可多处实例化：底部输入卡、行内编辑） */
 function createWheelPair(host, onChange) {
   const hourWheel = document.createElement('div');
@@ -166,6 +200,8 @@ function createWheelPair(host, onChange) {
   };
   hourWheel.addEventListener('scroll', onScroll);
   minuteWheel.addEventListener('scroll', onScroll);
+  bindWheelDrag(hourWheel, sync);
+  bindWheelDrag(minuteWheel, sync);
 
   return {
     setValue(text) {
@@ -200,17 +236,28 @@ function initTimePicker() {
   el('timeBtn').setAttribute('aria-expanded', 'false');
 }
 
-function queueSave() {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    saveTimer = null;
-    try {
-      const r = await api.dataSave({ dateKey: state.dateKey, plans: state.plans, dones: state.dones });
-      if (!r || !r.ok) showToast('保存失败，请重试');
-    } catch (err) {
-      showToast('保存失败：' + err);
+function applyPanelData(payload) {
+  state.dateKey = payload.dateKey;
+  state.plans = payload.day.plans;
+  state.dones = payload.day.dones;
+  if (payload.settings) state.settings = payload.settings;
+}
+
+async function saveTask(change, onSaved) {
+  try {
+    const result = await api.taskChange(change);
+    if (!result?.ok) {
+      showToast(result?.error || '保存失败，请重试');
+      return false;
     }
-  }, 120);
+    if (onSaved) onSaved();
+    applyPanelData(result);
+    renderAll();
+    return true;
+  } catch (err) {
+    showToast('保存失败：' + err);
+    return false;
+  }
 }
 
 function saveSettings(patch) {
@@ -227,9 +274,8 @@ const el = (id) => document.getElementById(id);
 function renderDateHeader() {
   const d = new Date();
   const week = '日一二三四五六'[d.getDay()];
-  el('dateTitle').textContent =
-    `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 星期${week}`;
-  el('dateSub').textContent = state.view === 'plans' ? '今日待办' : '今日已办';
+  el('dateTitle').textContent = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+  el('dateWeekday').textContent = `星期${week}`;
 }
 
 function updateComposerHint() {
@@ -242,11 +288,11 @@ function updateComposerHint() {
 }
 
 function sortedPlans() {
-  return state.plans
-    .map((p, i) => ({ p, i }))
-    .sort((a, b) => timeStartMinutes(a.p.time) - timeStartMinutes(b.p.time) || a.i - b.i)
-    .map((x) => x.p);
+  return state.plans.slice().sort((a, b) => a.originDateKey.localeCompare(b.originDateKey) ||
+    timeStartMinutes(a.time) - timeStartMinutes(b.time));
 }
+
+const rowKey = ({ originDateKey, id }) => `${originDateKey}:${id}`;
 
 const ICONS = {
   edit: '<path d="M3.5 9.5l6.2-6.2a1 1 0 0 1 1.4 1.4L4.9 10.9 2.8 11.5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.2 3.8l1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>',
@@ -269,23 +315,33 @@ function makeIconButton(title, icon, className, onClick) {
 
 /** 长文本：点击就地展开 / 收起（仅内容溢出时显示可点手型） */
 function makeTextExpandable(text, row) {
-  text.title = text.textContent;
   requestAnimationFrame(() => {
     if (text.scrollWidth <= text.clientWidth + 1) return;
     text.classList.add('can-expand');
-    text.addEventListener('click', (ev) => {
-      ev.stopPropagation();
+    text.title = '展开事项';
+    text.tabIndex = 0;
+    text.setAttribute('role', 'button');
+    text.setAttribute('aria-expanded', 'false');
+    const toggle = () => {
       const open = text.classList.toggle('is-expanded');
       row.classList.toggle('is-expanded', open);
+      text.setAttribute('aria-expanded', String(open));
+      text.title = open ? '收起事项' : '展开事项';
+    };
+    text.addEventListener('click', toggle);
+    text.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      toggle();
     });
   });
 }
 
 /** 危险操作二次确认：行内就地切换为「删除这条记录？取消 / 删除」，3.5s 未确认自动还原。
  *  不使用系统 confirm / 模态框：不打断浏览，且误触成本为零。 */
-function askDelete(li, kind, id) {
+function askDelete(li, kind, record) {
   if (pendingDelete) cancelDelete();
-  pendingDelete = { kind, id };
+  pendingDelete = { kind, record };
   li.classList.add('is-confirming');
   li.textContent = '';
 
@@ -306,14 +362,16 @@ function askDelete(li, kind, id) {
   okBtn.type = 'button';
   okBtn.className = 'text-btn danger';
   okBtn.textContent = '删除';
-  okBtn.addEventListener('click', () => {
+  okBtn.addEventListener('click', async () => {
     if (!pendingDelete) return;
-    const { kind: k, id: targetId } = pendingDelete;
+    const { kind: k, record: { id, originDateKey } } = pendingDelete;
     if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
     pendingDelete = null;
     pendingDeleteTimer = null;
-    if (k === 'plan') removePlan(targetId);
-    else removeDone(targetId);
+    if (!(await saveTask({ action: `delete-${k}`, id, originDateKey }))) {
+      if (k === 'plan') renderPlans();
+      else renderDones();
+    }
   });
 
   actions.append(cancelBtn, okBtn);
@@ -339,11 +397,12 @@ function renderPlans() {
   el('planCount').textContent = String(plans.length);
 
   for (const plan of plans) {
+    const key = rowKey(plan);
     const li = document.createElement('li');
-    li.className = 'row' + (plan.id === editingPlanId ? ' editing' : '') +
+    li.className = 'row' + (key === editingPlanId ? ' editing' : '') +
       (plan.id === lastAddedId ? ' is-new' : '');
 
-    if (plan.id === editingPlanId) {
+    if (key === editingPlanId) {
       li.classList.add('is-editing');
 
       const card = document.createElement('div');
@@ -376,12 +435,14 @@ function renderPlans() {
       const actions = document.createElement('div');
       actions.className = 'edit-actions';
 
-      const commit = () => {
-        plan.time = editTime;
-        plan.text = textArea.value.trim() || plan.text;
-        editingPlanId = null;
-        renderPlans();
-        queueSave();
+      const commit = async () => {
+        if (saveBtn.disabled) return;
+        saveBtn.disabled = true;
+        await saveTask({ action: 'edit-plan', id: plan.id, originDateKey: plan.originDateKey,
+          time: editTime, text: textArea.value.trim() || plan.text }, () => {
+          if (editingPlanId === key) editingPlanId = null;
+        });
+        saveBtn.disabled = false;
       };
       const cancel = () => {
         editingPlanId = null;
@@ -441,8 +502,15 @@ function renderPlans() {
       check.className = 'check';
       check.title = '标记完成';
       check.addEventListener('change', () => {
+        check.disabled = true;
         li.classList.add('is-completing');
-        setTimeout(() => completePlan(plan.id), 200);
+        setTimeout(async () => {
+          if (!(await saveTask({ action: 'complete', id: plan.id, originDateKey: plan.originDateKey }))) {
+            check.checked = false;
+            check.disabled = false;
+            li.classList.remove('is-completing');
+          }
+        }, 200);
       });
 
       const time = document.createElement('span');
@@ -457,8 +525,8 @@ function renderPlans() {
       const actions = document.createElement('div');
       actions.className = 'row-actions';
       actions.append(
-        makeIconButton('编辑', 'edit', '', () => { editingPlanId = plan.id; renderPlans(); }),
-        makeIconButton('删除', 'trash', 'danger', () => askDelete(li, 'plan', plan.id)),
+        makeIconButton('编辑', 'edit', '', () => { editingPlanId = key; renderPlans(); }),
+        makeIconButton('删除', 'trash', 'danger', () => askDelete(li, 'plan', plan)),
       );
       li.append(check, time, text, actions);
       makeTextExpandable(text, li);
@@ -494,10 +562,14 @@ function renderDones() {
     const actions = document.createElement('div');
     actions.className = 'row-actions';
     actions.append(
-      makeIconButton('撤销回待办', 'undo', '', () => undoDone(done.id)),
-      makeIconButton('删除', 'trash', 'danger', () => askDelete(li, 'done', done.id)),
+      makeIconButton('撤销回待办', 'undo', '', () =>
+        saveTask({ action: 'undo', id: done.id, originDateKey: done.originDateKey })),
+      makeIconButton('删除', 'trash', 'danger', () => askDelete(li, 'done', done)),
     );
-    li.append(time, text, meta, actions);
+    const trailing = document.createElement('div');
+    trailing.className = 'row-trailing';
+    trailing.append(meta, actions);
+    li.append(time, text, trailing);
     makeTextExpandable(text, li);
     list.appendChild(li);
   }
@@ -528,7 +600,6 @@ function setView(next, { animate = true } = {}) {
   tabDones.classList.toggle('is-active', next === 'dones');
   tabPlans.setAttribute('aria-selected', String(next === 'plans'));
   tabDones.setAttribute('aria-selected', String(next === 'dones'));
-  renderDateHeader();
   updateComposerHint();
 
   if (!animate) {
@@ -563,71 +634,6 @@ function setView(next, { animate = true } = {}) {
   }, 280);
 }
 
-function completePlan(id) {
-  const idx = state.plans.findIndex((p) => p.id === id);
-  if (idx < 0) return;
-  const [plan] = state.plans.splice(idx, 1);
-  state.dones.push({
-    id: uid('d'),
-    time: plan.time,
-    text: plan.text,
-    source: 'from-plan',
-    completedAt: localIsoNow(),
-  });
-  if (editingPlanId === id) editingPlanId = null;
-  renderAll();
-  queueSave();
-}
-
-function removePlan(id) {
-  state.plans = state.plans.filter((p) => p.id !== id);
-  if (editingPlanId === id) editingPlanId = null;
-  renderPlans();
-  queueSave();
-}
-
-function removeDone(id) {
-  state.dones = state.dones.filter((d) => d.id !== id);
-  renderDones();
-  queueSave();
-}
-
-function undoDone(id) {
-  const idx = state.dones.findIndex((d) => d.id === id);
-  if (idx < 0) return;
-  const [done] = state.dones.splice(idx, 1);
-  state.plans.push({
-    id: uid('p'),
-    time: done.time,
-    text: done.text,
-    createdAt: done.completedAt || localIsoNow(),
-  });
-  renderAll();
-  queueSave();
-}
-
-function addPlan(time, text, id) {
-  if (!text) return;
-  state.plans.push({ id: id || uid('p'), time, text, createdAt: localIsoNow() });
-  renderPlans();
-  queueSave();
-  setTimeout(() => { lastAddedId = null; }, 400);
-}
-
-function addManualDone(time, text, id) {
-  if (!text) return;
-  state.dones.push({
-    id: id || uid('d'),
-    time,
-    text,
-    source: 'manual',
-    completedAt: localIsoNow(),
-  });
-  renderDones();
-  queueSave();
-  setTimeout(() => { lastAddedId = null; }, 400);
-}
-
 function resolvedTheme() {
   if (state.settings.theme === 'dark') return 'dark';
   if (state.settings.theme === 'light') return 'light';
@@ -646,21 +652,21 @@ darkMq.addEventListener('change', () => {
 });
 
 async function refreshOnShow() {
-  const tk = todayKey();
-  if (tk === state.dateKey) return;
-  state.dateKey = tk;
-  editingPlanId = null;
+  if (todayKey() === state.dateKey) return;
   try {
-    const r = await api.dataLoad();
-    const day = (r && r.day) || {};
-    state.plans = Array.isArray(day.plans) ? day.plans : [];
-    state.dones = Array.isArray(day.dones) ? day.dones : [];
-    if (r && r.settings) state.settings = r.settings;
+    const payload = await api.dataLoad();
+    if (payload.dateKey === state.dateKey) return;
+    applyPanelData(payload);
+    applySettings();
+    if (editingPlanId) {
+      renderDateHeader();
+      renderDones();
+    } else {
+      renderAll();
+    }
   } catch (err) {
     showToast('数据加载失败：' + err);
   }
-  applySettings();
-  renderAll();
 }
 
 function bindEvents() {
@@ -705,19 +711,24 @@ function bindEvents() {
     });
   });
 
-  const submitComposer = () => {
-    const text = el('textInput').value.trim();
-    if (!text) return;
+  let submitting = false;
+  const submitComposer = async () => {
+    const input = el('textInput');
+    const draft = input.value;
+    const text = draft.trim();
+    if (!text || submitting) return;
+    submitting = true;
     const time = state.timeText || currentTimeText();
-    lastAddedId = uid('p');
-    if (state.view === 'plans') addPlan(time, text, lastAddedId);
-    else {
-      lastAddedId = uid('d');
-      addManualDone(time, text, lastAddedId);
+    const isPlan = state.view === 'plans';
+    const id = uid(isPlan ? 'p' : 'd');
+    lastAddedId = id;
+    const saved = await saveTask({ action: isPlan ? 'add-plan' : 'add-done', id, time, text });
+    submitting = false;
+    setTimeout(() => { if (lastAddedId === id) lastAddedId = null; }, 400);
+    if (saved) {
+      setTimePicker(false);
+      if (input.value === draft) input.value = '';
     }
-    setTimePicker(false);
-    el('textInput').value = '';
-    el('textInput').focus();
   };
   el('textInput').addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') submitComposer();
@@ -736,9 +747,8 @@ function bindEvents() {
       state.settings = payload.settings;
       applySettings();
     }
-    if (payload.day && payload.dateKey === state.dateKey) {
-      state.plans = Array.isArray(payload.day.plans) ? payload.day.plans : [];
-      state.dones = Array.isArray(payload.day.dones) ? payload.day.dones : [];
+    if (payload.day) {
+      applyPanelData(payload);
       editingPlanId = null;
       renderAll();
     }
@@ -747,15 +757,9 @@ function bindEvents() {
 
   api.onPanelChanged((payload) => {
     if (payload && payload.visible === true) refreshOnShow();
-    if (!payload || !payload.dock) return;
-    document.body.classList.remove('dock-reveal', 'dock-tuck');
-    if (payload.dock === 'revealed') {
-      void document.body.offsetWidth; // 强制重排，保证同一动画可重放
-      document.body.classList.add('dock-reveal');
-    } else if (payload.dock === 'tucked') {
-      document.body.classList.add('dock-tuck');
-    }
   });
+  window.addEventListener('focus', refreshOnShow);
+  setInterval(refreshOnShow, 15000);
 
   api.onSettingsChanged((payload) => {
     if (payload && payload.settings) {
@@ -768,11 +772,7 @@ function bindEvents() {
 async function init() {
   state.dateKey = todayKey();
   try {
-    const r = await api.dataLoad();
-    const day = (r && r.day) || {};
-    state.plans = Array.isArray(day.plans) ? day.plans : [];
-    state.dones = Array.isArray(day.dones) ? day.dones : [];
-    if (r && r.settings) state.settings = r.settings;
+    applyPanelData(await api.dataLoad());
   } catch (err) {
     showToast('数据加载失败：' + err);
   }

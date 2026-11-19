@@ -14,9 +14,9 @@ function subscribe(channel, callback) {
 }
 
 contextBridge.exposeInMainWorld('workboard', {
-  // 数据（REQ-006）：dataLoad 只返回当天 + 设置；明细按月分片存放
+  // 面板加载未完成待办、当天已办与设置；明细按月分片存放
   dataLoad: () => ipcRenderer.invoke('data:load'),
-  dataSave: (payload) => ipcRenderer.invoke('day:save', payload),
+  taskChange: (change) => ipcRenderer.invoke('task:change', change),
 
   // 回顾（日/周/月 + 关键字检索 + 导出）
   monthLoad: (month) => ipcRenderer.invoke('month:load', month),
