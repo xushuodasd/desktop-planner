@@ -46,6 +46,17 @@
         <input type="checkbox" id="autostartToggle" />
       </label>
     </section>
+    <section class="settings-group">
+      <div class="settings-item-text">
+        <div class="settings-item-label">AI 连接（只读）</div>
+        <div class="settings-item-desc">让本机 AI 按需查询待办和已办</div>
+      </div>
+      <div class="settings-mcp-actions">
+        <button type="button" class="rv-btn" id="copyMcpCodex">复制 Codex 命令</button>
+        <button type="button" class="rv-btn" id="copyMcpJson">复制 MCP JSON</button>
+      </div>
+      <p class="settings-item-desc" id="mcpStatus" role="status" hidden></p>
+    </section>
   </main>
 
   <script src="settings.js"></script>

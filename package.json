@@ -1,7 +1,7 @@
 {
   "name": "desktop-planner",
   "private": true,
-  "version": "1.0.7",
+  "version": "1.0.9",
   "description": "桌面悬浮工作计划板（构建入口）",
   "author": "desktop-planner",
   "license": "MIT",
@@ -32,6 +32,10 @@
       {
         "from": "scripts/tray-host.ps1",
         "to": "scripts/tray-host.ps1"
+      },
+      {
+        "from": "scripts/tray-menu.cs",
+        "to": "scripts/tray-menu.cs"
       },
       {
         "from": "scripts/start-tray-host.vbs",

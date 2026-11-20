@@ -1,7 +1,7 @@
 {
   "name": "desktop-planner",
   "productName": "悬浮工作台",
-  "version": "1.0.7",
+  "version": "1.0.9",
   "author": "desktop-planner",
   "main": "main.js",
   "description": "桌面悬浮工作计划板"

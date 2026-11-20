@@ -113,6 +113,17 @@ npm run dist:dir      # 仅解压目录 → dist\win-unpacked\
 9. 上一次构建的 `.blockmap` / `latest.yml` 带 Medium 标签时，再次构建会 `Access is denied`；`run-dist.js` 已在构建前自动删除
 10. 图标：`signAndEditExecutable: false` 时 electron-builder 不会写 exe 图标，必须靠 `afterPack.js` 用 rcedit 写；改成 `true` 会触发 winCodeSign 解压失败
 
+## 本地 AI 连接
+
+从托盘打开「设置」→「AI 连接（只读）」。复制出来的配置已包含当前安装路径和数据目录。
+
+- **Codex**：点「复制 Codex 命令」，在 PowerShell 中运行，再重新打开会话。[Codex MCP 文档](https://developers.openai.com/codex/mcp)
+- **TRAE / WorkBuddy**：点「复制 MCP JSON」，把 `mcpServers` 下的 `desktop-planner` 项合并到客户端的本地 MCP 设置。已有的服务配置可保留。[TRAE 配置文档](https://docs.trae.cn/ide_add-mcp-servers) · [WorkBuddy 连接器文档](https://open.workbuddy.cn/docs/connector)
+
+接入后可以问「列出所有未完成的待办」或「总结从 11 月 16 日到 11 月 20 日的已办」。`list_pending_tasks` 默认查询截至今天的未完成事项，`list_completed_tasks` 默认查询今天的已办。两项工具支持日期、关键词和分页。
+
+客户端在本机通过标准输入输出启动读取进程。工作台可以关闭，连接器无需额外安装 Node.js，也不会开放网络端口。连接后，授权的 AI 客户端可以看到查询返回的任务内容。
+
 ## 功能摘要
 
 - 主面板固定为 360×560 逻辑像素。标题区可拖动，贴顶滑动保持相同宽高，重启恢复位置。

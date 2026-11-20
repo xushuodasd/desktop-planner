@@ -69,16 +69,32 @@ try {
 }
 if (-not $icon) { $icon = [System.Drawing.SystemIcons]::Application }
 
-$menu = New-Object System.Windows.Forms.ContextMenuStrip
-$itemOpen = $menu.Items.Add('打开面板')
+$styledMenu = $false
+if (-not [System.Windows.Forms.SystemInformation]::HighContrast) {
+  try {
+    Add-Type -Path (Join-Path $PSScriptRoot 'tray-menu.cs') -ReferencedAssemblies System.Windows.Forms,System.Drawing
+    $menu = New-Object WorkboardTrayMenu
+    $styledMenu = $true
+  } catch {
+    Write-TrayLog "custom menu unavailable: $($_.Exception.Message)"
+  }
+}
+if (-not $styledMenu) { $menu = New-Object System.Windows.Forms.ContextMenuStrip }
+
+function Add-TrayAction([string]$label, [string]$glyph) {
+  if ($styledMenu) { return $menu.AddAction($label, $glyph) }
+  return $menu.Items.Add($label)
+}
+
+$itemOpen = Add-TrayAction '打开面板' 'panel'
 $itemOpen.add_Click({ Invoke-DesktopPlanner })
-$itemReview = $menu.Items.Add('回顾…')
+$itemReview = Add-TrayAction '回顾…' 'review'
 $itemReview.add_Click({ Invoke-DesktopPlanner '--open-review' })
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
-$itemSettings = $menu.Items.Add('设置…')
+$itemSettings = Add-TrayAction '设置…' 'settings'
 $itemSettings.add_Click({ Invoke-DesktopPlanner '--open-settings' })
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
-$itemQuit = $menu.Items.Add('退出')
+$itemQuit = Add-TrayAction '退出' 'quit'
 $itemQuit.add_Click({ Invoke-QuitApp })
 
 $script:notify = New-Object System.Windows.Forms.NotifyIcon

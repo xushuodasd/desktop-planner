@@ -16,7 +16,8 @@
 
  */
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, dialog, clipboard } = require('electron');
+const { validDateKey, validMonth, monthOf, completionDate, localDateKey: todayKeyMain, storedMonths } = require('./workboard-files');
 
 const fs = require('fs');
 
@@ -1714,34 +1715,11 @@ function createElectronTrayFallback(iconPath) {
 
 /* -------------------------- 数据 v2：按月分片（months/YYYY-MM.json） -------------------------- */
 
-const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
-const MONTH_RE = /^\d{4}-\d{2}$/;
-
 /** 'YYYY-MM' -> { month, days: { 'YYYY-MM-DD': {plans, dones} } }，按需加载 */
 const monthCache = new Map();
 
 /** 'YYYY-MM' -> 最近一次自身写入的文本（月文件回环守卫） */
 const monthOwnWrite = new Map();
-
-function todayKeyMain(d) {
-  const t = d || new Date();
-  const p = (n) => String(n).padStart(2, '0');
-  return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`;
-}
-
-function validDateKey(key) {
-  return isStr(key) && DAY_RE.test(key);
-}
-
-function validMonth(m) {
-  if (!isStr(m) || !MONTH_RE.test(m)) return false;
-  const mm = Number(m.slice(5, 7));
-  return mm >= 1 && mm <= 12;
-}
-
-function monthOf(dateKey) {
-  return isStr(dateKey) ? dateKey.slice(0, 7) : '';
-}
 
 function monthFilePath(m) {
   return path.join(MONTHS_DIR, m + '.json');
@@ -1877,12 +1855,7 @@ function readMonthDays(month) {
 
 function* storedDays() {
   ensureMonthsDir();
-  const months = new Set(Object.keys(board.days).map(monthOf));
-  for (const file of fs.readdirSync(MONTHS_DIR)) {
-    const month = file.slice(0, -5);
-    if (file.endsWith('.json') && validMonth(month)) months.add(month);
-  }
-  for (const month of [...months].sort()) {
+  for (const month of storedMonths(MONTHS_DIR, board.days)) {
     yield* Object.entries(readMonthDays(month));
   }
 }
@@ -1895,7 +1868,7 @@ function panelData(dateKey = todayKeyMain()) {
       for (const plan of day.plans) plans.push({ ...plan, originDateKey });
     }
     for (const done of day.dones) {
-      if ((done.completedDateKey || originDateKey) === dateKey) dones.push({ ...done, originDateKey });
+      if (completionDate(done, originDateKey) === dateKey) dones.push({ ...done, originDateKey });
     }
   }
   // 跨日完成会保存在原日分片，按实际完成时间展示。
@@ -1976,7 +1949,7 @@ function queryHistory(from, to, keyword, completedOnly) {
       for (const plan of day.plans) if (matches(plan)) bucket(origin).plans.push(plan);
     }
     for (const done of day.dones) {
-      const dateKey = done.completedDateKey || origin;
+      const dateKey = completionDate(done, origin);
       if (inRange(dateKey) && matches(done)) bucket(dateKey).dones.push(done);
     }
   }
@@ -2142,6 +2115,21 @@ function registerIpc() {
 
 
   ipcMain.handle('settings:get', () => ({ settings: board.settings }));
+
+  ipcMain.handle('settings:copy-mcp', (event, format) => {
+    if (!settingsWin || event.sender !== settingsWin.webContents) return false;
+    if (format !== 'codex' && format !== 'json') return false;
+    const command = process.execPath;
+    const args = [path.join(APP_DIR, 'mcp-server.js'), DATA_DIR];
+    const env = { ELECTRON_RUN_AS_NODE: '1' };
+    if (format === 'codex') {
+      const quote = (value) => "'" + value.replaceAll("'", "''") + "'";
+      clipboard.writeText(`codex mcp add desktop-planner --env ELECTRON_RUN_AS_NODE=1 -- ${[command, ...args].map(quote).join(' ')}`);
+    } else {
+      clipboard.writeText(JSON.stringify({ mcpServers: { 'desktop-planner': { command, args, env } } }, null, 2));
+    }
+    return true;
+  });
 
 
 

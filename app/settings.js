@@ -53,6 +53,17 @@ function bindEvents() {
     api.settingsSet({ autostart: el('autostartToggle').checked });
   });
 
+  for (const [id, format] of [['copyMcpCodex', 'codex'], ['copyMcpJson', 'json']]) {
+    el(id).addEventListener('click', async () => {
+      const status = el('mcpStatus');
+      const copied = await api.copyMcpConfig(format).catch(() => false);
+      status.textContent = copied
+        ? (format === 'codex' ? '已复制，在 PowerShell 中运行。' : '已复制，合并到 AI 的本地 MCP 设置。')
+        : '复制失败，请重试。';
+      status.hidden = false;
+    });
+  }
+
   api.onSettingsChanged((payload) => {
     if (payload && payload.settings) {
       settings = payload.settings;

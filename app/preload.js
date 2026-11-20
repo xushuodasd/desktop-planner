@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('workboard', {
 
   // 设置（透明度/主题/自启；panelPosition 由主进程维护）
   settingsGet: () => ipcRenderer.invoke('settings:get'),
+  copyMcpConfig: (format) => ipcRenderer.invoke('settings:copy-mcp', format),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
 
   // 面板开合（REQ-002）

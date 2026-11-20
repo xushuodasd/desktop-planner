@@ -44,6 +44,7 @@ Copy-Item -Path (Join-Path $root 'app\*') -Destination $resApp -Recurse -Force
 $resScripts = Join-Path $out 'resources\scripts'
 New-Item -ItemType Directory -Path $resScripts -Force | Out-Null
 Copy-Item (Join-Path $root 'scripts\tray-host.ps1') $resScripts -Force
+Copy-Item (Join-Path $root 'scripts\tray-menu.cs') $resScripts -Force
 Copy-Item (Join-Path $root 'scripts\start-tray-host.vbs') $resScripts -Force
 Copy-Item (Join-Path $root 'app\assets\tray-win.ico') (Join-Path $resScripts 'tray-win.ico') -Force
 Copy-Item (Join-Path $root 'app\assets\icon.ico') (Join-Path $resScripts 'icon.ico') -Force
